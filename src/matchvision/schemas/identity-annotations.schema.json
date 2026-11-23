@@ -1,0 +1,145 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://matchvision.local/schemas/identity-annotations.schema.json",
+  "title": "Anotaciones humanas de identidad de MatchVision",
+  "description": "Etiquetas y cajas anotadas por personas. Solo los fotogramas exhaustivos sin objetos desconocidos, ambiguos o ignorados son aptos para evaluación.",
+  "type": "object",
+  "required": ["schema_version", "video", "exhaustive_frames", "frames"],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "video": {
+      "type": "object",
+      "required": ["path", "sha256", "frame_count", "width", "height", "fps"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"},
+        "frame_count": {"type": "integer", "minimum": 1},
+        "width": {"type": "integer", "minimum": 1},
+        "height": {"type": "integer", "minimum": 1},
+        "fps": {"type": "number", "exclusiveMinimum": 0}
+      },
+      "additionalProperties": true
+    },
+    "created_at": {"type": "string"},
+    "annotation_policy": {"type": "string"},
+    "sampling_plan": {
+      "type": "object",
+      "required": ["schema_version", "record_type", "dataset_id", "plan_id", "plan_sha256", "video", "protocol", "sampling", "dense_windows", "hard_cases", "planned_frames", "quality_requirements"],
+      "additionalProperties": true
+    },
+    "annotation_history": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["action", "timestamp", "frame", "annotation_id"],
+        "properties": {
+          "action": {"enum": ["created", "corrected", "deleted"]},
+          "timestamp": {"type": "string", "minLength": 1},
+          "frame": {"type": "integer", "minimum": 1},
+          "annotation_id": {"type": "string", "minLength": 1},
+          "identity_id": {"type": ["string", "null"]}
+        },
+        "additionalProperties": true
+      }
+    },
+    "dataset": {
+      "type": "object",
+      "properties": {
+        "freeze": {
+          "type": "object",
+          "required": ["status", "frozen_at", "content_sha256", "policy"],
+          "properties": {
+            "status": {"const": "frozen"},
+            "frozen_at": {"type": "string", "minLength": 1},
+            "content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "policy": {"type": "string", "minLength": 1}
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "exhaustive_frames": {
+      "type": "array",
+      "items": {"type": "integer", "minimum": 1},
+      "uniqueItems": true
+    },
+    "frames": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["frame", "exhaustive", "observations"],
+        "properties": {
+          "frame": {"type": "integer", "minimum": 1},
+          "exhaustive": {"type": "boolean"},
+          "review_status": {"enum": ["pending", "reviewed", "not_applicable"]},
+          "review_note": {"type": "string"},
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["event_id", "identity_id", "event_type"],
+              "properties": {
+                "event_id": {"type": "string", "minLength": 1},
+                "identity_id": {"type": "string", "minLength": 1},
+                "event_type": {
+                  "enum": [
+                    "appearance",
+                    "disappearance",
+                    "occlusion_start",
+                    "occlusion_end",
+                    "crossing",
+                    "camera_change"
+                  ]
+                },
+                "notes": {"type": "string"}
+              },
+              "additionalProperties": true
+            }
+          },
+          "observations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "annotation_id",
+                "x1",
+                "y1",
+                "x2",
+                "y2",
+                "unknown",
+                "ambiguous",
+                "ignore"
+              ],
+              "properties": {
+                "annotation_id": {"type": "string", "minLength": 1},
+                "identity_id": {"type": ["string", "null"]},
+                "entity_type": {
+                  "enum": ["player", "goalkeeper", "referee", "ball", "other"],
+                  "default": "player"
+                },
+                "x1": {"type": "number"},
+                "y1": {"type": "number"},
+                "x2": {"type": "number"},
+                "y2": {"type": "number"},
+                "unknown": {"type": "boolean"},
+                "ambiguous": {"type": "boolean"},
+                "ignore": {"type": "boolean"},
+                "identity_status": {"enum": ["confirmed", "unknown", "pending", "ignored"]},
+                "notes": {"type": "string"},
+                "source_kind": {"type": "string"},
+                "source_temporal_track_id": {"type": ["integer", "null"]},
+                "source_persistent_id": {"type": ["integer", "null"]}
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

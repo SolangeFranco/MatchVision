@@ -1,0 +1,3144 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MatchVision — anotación de identidades</title>
+  <style>
+    :root { color-scheme: light; font: 14px system-ui, sans-serif; }
+    body { margin: 0; color: #17212b; background: #f3f5f7; }
+    header { padding: 14px 20px; background: #17212b; color: white; }
+    main { display: grid; grid-template-columns: minmax(0, 1fr) 350px; gap: 14px; padding: 14px; }
+    section, aside { background: white; border: 1px solid #d6dde4; border-radius: 6px; padding: 12px; }
+    .viewer { position: relative; width: 100%; background: #111; }
+    video { display: block; width: 100%; height: auto; }
+    canvas { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; }
+    .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
+    label { display: grid; gap: 3px; }
+    input[type="number"], input[type="text"], select { min-width: 90px; padding: 5px; }
+    button { padding: 6px 10px; cursor: pointer; }
+    .grow { flex: 1; }
+    .small { color: #526170; font-size: 12px; }
+    #message { min-height: 1.4em; color: #075b33; }
+    #observations { max-height: 240px; overflow: auto; }
+    #observations button { display: block; width: 100%; text-align: left; margin: 3px 0; }
+    .warning { color: #8a3d00; }
+    .proposal { border: 1px solid #ccd5de; border-radius: 6px; padding: 8px; margin: 8px 0; }
+    .proposal img { background: #111; }
+    .decision-accepted { color: #075b33; font-weight: 600; }
+    .decision-rejected { color: #8a3d00; font-weight: 600; }
+    @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <header>
+    <strong>MatchVision — anotación manual de identidades</strong>
+    <div class="small" style="color:#d7e1eb">Las etiquetas guardadas son anotaciones humanas; las predicciones solo sugieren recuadros.</div>
+  </header>
+  <main>
+    <section>
+      <div class="row">
+        <label>Video original (base del Ground Truth) <input id="videoFile" type="file" accept="video/*"></label>
+        <label>Copia compatible opcional <input id="reviewVideoFile" type="file" accept="video/*"></label>
+        <label>Manifiesto de la copia (si se usa) <input id="reviewManifestFile" type="file" accept=".json"></label>
+        <label>Predicciones CSV/TXT <input id="predictionFile" type="file" accept=".csv,.txt"></label>
+        <label>Casos priorizados JSON <input id="fragmentFile" type="file" accept=".json"></label>
+        <label>Apoyo visual ReID JSON <input id="proposalFile" type="file" accept=".json"></label>
+        <label>Plan reproducible de muestreo JSON <input id="samplingPlanFile" type="file" accept=".json"></label>
+        <label>Importar anotaciones previas <input id="annotationFile" type="file" accept=".json"></label>
+        <button id="clearLocalAnnotations" type="button">Borrar copia local</button>
+      </div>
+      <div class="viewer">
+        <video id="video" controls></video>
+        <canvas id="overlay"></canvas>
+      </div>
+      <div class="row">
+        <button id="prevFrame" title="Atajo: flecha izquierda">−1 fotograma</button>
+        <label>Fotograma <input id="frameNumber" type="number" min="1" value="1"></label>
+        <button id="nextFrame" title="Atajo: flecha derecha">+1 fotograma</button>
+        <button id="prevCase" title="Atajo: flecha arriba">Caso anterior</button>
+        <button id="nextCase" title="Atajo: flecha abajo">Caso siguiente</button>
+        <button id="jumpEvent">Ir al evento</button>
+        <label>Salto <input id="stride" type="number" min="1" value="10"></label>
+        <button id="strideForward">Avanzar fotogramas</button>
+      </div>
+      <div class="row">
+        <label>FPS del original <input id="sourceFps" type="number" step="any"></label>
+        <label>Fotogramas procesados <input id="sourceFrameCount" type="number" min="1" step="1"></label>
+        <label>Ancho original <input id="sourceWidth" type="number" min="1" step="1"></label>
+        <label>Alto original <input id="sourceHeight" type="number" min="1" step="1"></label>
+        <button id="confirmFrameMapping">Verificar correspondencia</button>
+      </div>
+      <div class="row">
+        <label><input id="exhaustive" type="checkbox"> Todas las personas visibles están anotadas (revisión exhaustiva)</label>
+        <label>Estado de revisión
+          <select id="reviewStatus">
+            <option value="pending">Pendiente</option>
+            <option value="reviewed">Revisado</option>
+            <option value="not_applicable">No aplicable</option>
+          </select>
+        </label>
+        <label class="grow">Justificación / notas de revisión <input id="reviewNote" type="text"></label>
+        <label><input id="drawMode" type="checkbox"> Dibujar recuadro manual arrastrando</label>
+        <button id="saveFrame">Guardar revisión del fotograma</button>
+      </div>
+      <div id="frameStatus" class="small" aria-live="polite"></div>
+      <div id="caseInfo" class="small"></div>
+      <div id="message"></div>
+      <p class="small warning">Marca un fotograma como exhaustivo solo cuando hayas revisado la imagen completa y cada persona visible tenga un recuadro y una identidad, o esté marcada explícitamente como desconocida, ambigua o ignorada. Si no puedes resolver una identidad, no la adivines. Los fotogramas no exhaustivos se excluyen de las métricas.</p>
+      <p class="small">Atajos: ←/→ cambia de fotograma; ↑/↓ cambia de caso. Puedes anotar directamente sobre el original. Si usas una copia compatible, verifica que conserve el orden y la temporización.</p>
+    </section>
+    <aside>
+      <h3>Recuadro e identidad real</h3>
+      <div id="selectedInfo" class="small">Dibuja un recuadro manualmente o usa una sugerencia solo como referencia visual.</div>
+      <div class="row"><label>Tipo de objeto
+        <select id="entityType">
+          <option value="player">Jugador</option>
+          <option value="goalkeeper">Portero</option>
+          <option value="referee">Árbitro</option>
+          <option value="ball">Balón</option>
+          <option value="other">Otro</option>
+        </select>
+      </label></div>
+      <div class="row"><label>Identificador humano estable <input id="identity" type="text" list="identitySuggestions" placeholder="por ejemplo: jugador-07"><datalist id="identitySuggestions"></datalist></label></div>
+      <div class="row">
+        <label><input id="unknown" type="checkbox"> Identidad desconocida</label>
+        <label><input id="ambiguous" type="checkbox"> Identidad ambigua</label>
+        <label><input id="ignore" type="checkbox"> Ignorar recuadro / límite incierto</label>
+      </div>
+      <div class="row"><label class="grow">Notas <input id="notes" type="text"></label></div>
+      <div class="row">
+        <button id="saveObservation">Guardar / corregir identidad</button>
+        <button id="deleteObservation">Eliminar anotación</button>
+      </div>
+      <h3>Anotaciones del fotograma</h3>
+      <div id="observations"></div>
+      <h3>Eventos de trayectoria</h3>
+      <p class="small">Registra manualmente apariciones, desapariciones, oclusiones, cruces entre jugadores y cambios de escena. No son eventos inferidos por el modelo.</p>
+      <div class="row">
+        <label>Identidad del evento <input id="eventIdentity" type="text" list="identitySuggestions" placeholder="PLAYER-001"></label>
+        <label>Evento
+          <select id="trajectoryEventType">
+            <option value="appearance">Aparición</option>
+            <option value="disappearance">Desaparición</option>
+            <option value="occlusion_start">Inicio de oclusión</option>
+            <option value="occlusion_end">Fin de oclusión</option>
+            <option value="crossing">Cruce entre jugadores</option>
+            <option value="camera_change">Cambio de cámara/escena</option>
+          </select>
+        </label>
+        <label>Nota <input id="eventNotes" type="text"></label>
+        <button id="saveTrajectoryEvent" type="button">Registrar evento humano</button>
+      </div>
+      <div id="trajectoryEvents"></div>
+      <div class="row"><button id="exportJson">Descargar anotaciones JSON</button></div>
+      <div class="row">
+        <button id="freezeGroundTruth" type="button">Congelar conjunto de prueba</button>
+        <span class="small">El conjunto congelado queda de solo lectura y su contenido se verifica por SHA-256.</span>
+      </div>
+      <p class="small">Usa el mismo identificador humano para la misma persona en todas sus apariciones. Los ID temporales/persistentes del tracker son solo referencias: no son identidades reales ni deben copiarse automáticamente.</p>
+      <p class="small">La asignación de equipo (color de camiseta) es distinta de la identidad individual. Aquí solo se etiqueta la identidad de la persona.</p>
+      <h3>Identidades humanas y Ground Truth</h3>
+      <p class="small warning">La anotación por fotograma y sus IDs humanos son independientes de las propuestas. Los tracks automáticos son referencias opcionales; nunca se confirman automáticamente.</p>
+      <div class="row">
+        <label>ID de identidad (etiqueta, no nombre real) <input id="newIdentityId" type="text" maxlength="80" placeholder="PLAYER-001"></label>
+        <label>Alias opcional <input id="newIdentityLabel" type="text" maxlength="120" placeholder="opcional"></label>
+        <button id="createIdentity" type="button">Crear ID de identidad</button>
+      </div>
+      <div class="row">
+        <label>Track revisado directamente
+          <select id="manualTrackSelect" aria-label="Track revisado directamente">
+            <option value="">Carga las trayectorias CSV</option>
+          </select>
+        </label>
+        <label>Fotograma de evidencia
+          <select id="manualEvidenceFrame" aria-label="Fotograma de evidencia del track">
+            <option value="">Selecciona un track primero</option>
+          </select>
+        </label>
+        <label>Asignar a identidad
+          <select id="manualIdentitySelect" aria-label="Identidad para asignación directa">
+            <option value="">Selecciona un ID de identidad</option>
+          </select>
+        </label>
+        <button id="assignManualTrack" type="button">Confirmar track revisado</button>
+      </div>
+      <p class="small">La asignación directa no depende de aceptar una propuesta; revisa visualmente la trayectoria y el fotograma indicado. Los conflictos temporales siguen bloqueados.</p>
+      <div id="identitySummary" class="small">No hay identidades humanas creadas.</div>
+      <div id="identityList"></div>
+      <details>
+        <summary>Historial de cambios humanos</summary>
+        <div id="humanHistory" class="small"></div>
+      </details>
+      <div id="reidMetricsSummary" class="small">Las métricas ReID esperan tracks asignados manualmente a identidades.</div>
+      <h3>Apoyo visual automático</h3>
+      <p class="small warning">Las propuestas y scores son heurísticos; no son identidades humanas ni ground truth.</p>
+      <div id="reviewDecisionSummary" class="small">Sin decisiones de propuestas.</div>
+      <div class="row">
+        <button id="exportReviewDecisions" type="button">Exportar decisiones de revisión (JSON)</button>
+        <button id="exportGroundTruthJson" type="button">Exportar revisión y Ground Truth (JSON)</button>
+        <button id="exportGroundTruthCsv" type="button">Exportar revisión y Ground Truth (CSV)</button>
+        <button id="undoHumanAction" type="button" disabled>Deshacer última decisión</button>
+      </div>
+      <div class="row">
+        <label>Recuperar copia de revisión ReID <input id="importHumanReview" type="file" accept=".json"></label>
+      </div>
+      <div id="reviewAssistance" class="small" aria-live="polite">Carga el JSON de apoyo visual para ver fotogramas y comparaciones.</div>
+    </aside>
+  </main>
+<script>
+(() => {
+  "use strict";
+  const $ = (id) => document.getElementById(id);
+  const video = $("video"), canvas = $("overlay"), ctx = canvas.getContext("2d");
+  const state = {
+    file: null, reviewFile: null, width: 0, height: 0, fps: 0, frameCount: 0,
+    detections: new Map(), frames: new Map(), fragments: [], caseIndex: -1,
+    selectedDetection: null, selectedAnnotation: null, drawing: null,
+    videoSha256: null, sourcePath: "", metadataRestored: false,
+    database: null, saveQueue: Promise.resolve(), reviewManifest: null,
+    reviewFileSha256: null, reviewReady: false, requestedFrame: null,
+    proposalsByCase: new Map(), proposalGroups: new Map(), proposalFileSha256: null,
+    duplicateRelationTypes: new Map(), reviewDecisions: new Map(),
+    reviewDecisionHistory: [], actionHistory: [], identities: new Map(),
+    trackAssignments: new Map(), identityHistory: [], trackFrames: new Map(),
+    frozen: false, freezeMetadata: null, recordType: null,
+    annotationPolicy: null, videoObjectUrl: null,
+    samplingPlan: null, samplingPlanSha256: null
+  };
+  const databaseReady = new Promise((resolve, reject) => {
+    const request = indexedDB.open("matchvision-identity-annotations", 1);
+    request.onupgradeneeded = () => {
+      request.result.createObjectStore("sessions", {keyPath: "videoSha256"});
+    };
+    request.onsuccess = () => {
+      state.database = request.result;
+      resolve(request.result);
+    };
+    request.onerror = () => reject(request.error || new Error("No se pudo abrir el almacenamiento local del navegador."));
+  });
+  const frameKey = () => {
+    const requested = Math.max(1, Number($("frameNumber").value) || 1);
+    return state.frameCount > 0 ? Math.min(state.frameCount, requested) : requested;
+  };
+  const recordFor = (frame) => {
+    if (!state.frames.has(frame)) {
+      state.frames.set(frame, {frame, exhaustive: false, observations: [], events: []});
+    }
+    return state.frames.get(frame);
+  };
+  const setMessage = (text, error = false) => {
+    $("message").textContent = text;
+    $("message").style.color = error ? "#a32626" : "#075b33";
+  };
+  const hashFile = async (file) => Array.from(
+    new Uint8Array(await crypto.subtle.digest("SHA-256", await file.arrayBuffer()))
+  ).map((byte) => byte.toString(16).padStart(2,"0")).join("");
+  const setReviewVideo = (file) => {
+    if (state.videoObjectUrl) URL.revokeObjectURL(state.videoObjectUrl);
+    state.videoObjectUrl = URL.createObjectURL(file);
+    video.src = state.videoObjectUrl;
+  };
+  const annotationEditorIds = [
+    "exhaustive", "drawMode", "saveFrame", "entityType", "identity",
+    "unknown", "ambiguous", "ignore", "notes", "saveObservation",
+    "deleteObservation", "eventIdentity", "trajectoryEventType",
+    "eventNotes", "saveTrajectoryEvent"
+  ];
+  const setAnnotationFrozen = (frozen) => {
+    state.frozen = frozen;
+    for (const id of annotationEditorIds) $(id).disabled = frozen;
+    $("freezeGroundTruth").disabled = frozen;
+    $("exportJson").disabled = false;
+    if (frozen) {
+      $("freezeGroundTruth").textContent = "Conjunto de prueba congelado";
+      $("frameStatus").classList.add("warning");
+    } else {
+      $("freezeGroundTruth").textContent = "Congelar conjunto de prueba";
+      $("frameStatus").classList.remove("warning");
+    }
+  };
+  const refuseFrozenEdit = () => {
+    if (!state.frozen) return false;
+    setMessage("Este Ground Truth está congelado y es de solo lectura.", true);
+    return true;
+  };
+  const priorityLabels = {
+    1: "Prioridad 1 — ReID con menor confianza",
+    2: "Prioridad 2 — otras propuestas ReID",
+    3: "Prioridad 3 — desapariciones dentro de un track",
+    4: "Prioridad 4 — reinicios de track cercanos",
+    5: "Prioridad 5 — cruces u oclusiones posibles"
+  };
+  const reviewEventLabel = (item) => {
+    switch (item.event_type) {
+      case "reid_association":
+        return `Propuesta de asociación ReID (score ${Number(item.association_score).toFixed(3)}).`;
+      case "within_track_disappearance":
+        return `Posible desaparición de ${item.gap_frames} fotogramas en el track ${item.temporal_track_id}.`;
+      case "nearby_temporal_id_restart":
+        return `El track ${item.temporal_track_id} comienza cerca del fin del track ${item.candidate_previous_track_id}.`;
+      case "close_player_crossing_or_occlusion":
+        return `Posible cruce u oclusión entre los tracks ${(item.track_ids || []).join(" y ")}.`;
+      default:
+        return "Evento candidato para revisar manualmente.";
+    }
+  };
+  const loadSavedAnnotations = async (videoSha256) => {
+    const database = await databaseReady;
+    return new Promise((resolve, reject) => {
+      const request = database.transaction("sessions", "readonly")
+        .objectStore("sessions").get(videoSha256);
+      request.onsuccess = () => resolve(request.result || null);
+      request.onerror = () => reject(request.error || new Error("No se pudo leer la copia local."));
+    });
+  };
+  const persistAnnotations = () => {
+    if (!state.videoSha256 || !state.width || !state.height || !state.frameCount) {
+      return Promise.resolve(false);
+    }
+    const session = {
+      videoSha256: state.videoSha256,
+      video: {
+        path: state.sourcePath,
+        sha256: state.videoSha256,
+        frame_count: state.frameCount,
+        width: state.width,
+        height: state.height,
+        fps: state.fps
+      },
+      review_decisions: [...state.reviewDecisions.values()],
+      review_decision_history: state.reviewDecisionHistory,
+      human_action_history: state.actionHistory,
+      human_identities: [...state.identities.values()],
+      track_identity_assignments: [...state.trackAssignments.values()],
+      identity_history: state.identityHistory,
+      proposal_file_sha256: state.proposalFileSha256,
+      sampling_plan: state.samplingPlan,
+      sampling_plan_sha256: state.samplingPlanSha256,
+      annotations_frozen: state.frozen,
+      ground_truth_freeze: state.freezeMetadata,
+      ground_truth_record_type: state.recordType,
+      annotation_policy: state.annotationPolicy,
+      exhaustive_frames: [...state.frames.values()]
+        .filter((record) => record.exhaustive)
+        .map((record) => record.frame)
+        .sort((left, right) => left - right),
+      frames: [...state.frames.values()].sort((left, right) => left.frame - right.frame),
+      updated_at: new Date().toISOString()
+    };
+    const save = state.saveQueue.then(async () => {
+      const database = await databaseReady;
+      await new Promise((resolve, reject) => {
+        const transaction = database.transaction("sessions", "readwrite");
+        transaction.objectStore("sessions").put(session);
+        transaction.oncomplete = resolve;
+        transaction.onerror = () => reject(transaction.error || new Error("Falló el guardado local."));
+        transaction.onabort = () => reject(transaction.error || new Error("Se canceló el guardado local."));
+      });
+    });
+    state.saveQueue = save.then(
+      () => {
+        setMessage("Revisión guardada localmente en este navegador.");
+        return true;
+      },
+      (error) => {
+        setMessage(`Falló el guardado local: ${error.message}`, true);
+        return false;
+      }
+    );
+    return state.saveQueue;
+  };
+  const validateReviewCases = (data) => {
+    if (!Array.isArray(data.cases)) throw new Error("El archivo de casos debe contener una lista «cases».");
+    if (data.schema_version !== 1) throw new Error("La versión del esquema de casos no es compatible.");
+    if (!state.videoSha256 || !state.reviewReady) {
+      throw new Error("Carga y verifica el video original y la copia de revisión antes de cargar los casos.");
+    }
+    if (state.frameCount && data.video_frame_count !== state.frameCount) {
+      throw new Error("El número de fotogramas de los casos no coincide con el video original.");
+    }
+    if (state.videoSha256 && data.video?.sha256 &&
+        data.video.sha256 !== state.videoSha256) {
+      throw new Error("El SHA-256 del video de los casos no coincide con el video original.");
+    }
+    for (const [index, item] of data.cases.entries()) {
+      if (!Number.isInteger(item.start_frame) || !Number.isInteger(item.event_frame) ||
+          !Number.isInteger(item.end_frame) ||
+          item.start_frame < 1 || item.start_frame > item.event_frame ||
+          item.event_frame > item.end_frame ||
+          (state.frameCount && item.end_frame > state.frameCount)) {
+        throw new Error(`El intervalo de fotogramas del caso ${index + 1} no es válido.`);
+      }
+    }
+  };
+  const confirmFrameMapping = async () => {
+    const fps = Number($("sourceFps").value);
+    const frameCount = Number($("sourceFrameCount").value);
+    const width = Number($("sourceWidth").value);
+    const height = Number($("sourceHeight").value);
+    if (!state.videoSha256 || !state.file || video.readyState < 1) {
+      throw new Error("Carga el video original y espera a que el navegador lo pueda reproducir.");
+    }
+    if (![fps, frameCount, width, height].every(Number.isFinite) ||
+        fps <= 0 || !Number.isInteger(frameCount) || frameCount < 1 ||
+        !Number.isInteger(width) || width < 1 ||
+        !Number.isInteger(height) || height < 1) {
+      throw new Error("Indica valores válidos de FPS, fotogramas, ancho y alto del original.");
+    }
+    const durationFrames = video.duration * fps;
+    if (Math.abs(durationFrames - frameCount) > 1.5) {
+      throw new Error(
+        `La duración de la copia equivale a ${durationFrames.toFixed(2)} fotogramas, ` +
+        `no a ${frameCount}; las copias no están alineadas fotograma a fotograma.`
+      );
+    }
+    if (state.reviewFile &&
+        Math.abs(width / height - video.videoWidth / video.videoHeight) > 0.001) {
+      throw new Error("La proporción de aspecto de la copia no coincide con el video original.");
+    }
+    if (!state.reviewFile &&
+        (width !== video.videoWidth || height !== video.videoHeight)) {
+      throw new Error("Las dimensiones indicadas no coinciden con el video original.");
+    }
+    if (state.reviewManifest) {
+      if (state.reviewManifest.source_sha256 !== state.videoSha256 ||
+          state.reviewManifest.output_sha256 !== state.reviewFileSha256 ||
+          state.reviewManifest.frames_written !== frameCount ||
+          state.reviewManifest.source_fps_fraction === undefined ||
+          state.reviewManifest.output_fps_fraction !==
+            state.reviewManifest.source_fps_fraction ||
+          state.reviewManifest.source_width !== width ||
+          state.reviewManifest.source_height !== height ||
+          state.reviewManifest.output_width !== video.videoWidth ||
+          state.reviewManifest.output_height !== video.videoHeight) {
+        throw new Error("Los hashes o metadatos del manifiesto no coinciden con los archivos cargados.");
+      }
+    }
+    state.fps = fps;
+    state.frameCount = frameCount;
+    state.width = width;
+    state.height = height;
+    state.metadataRestored = true;
+    state.reviewReady = true;
+    $("frameNumber").max = String(frameCount);
+    syncFrame();
+    if (!await persistAnnotations()) return;
+    setMessage(state.reviewFile
+      ? `Correspondencia verificada: ${frameCount} fotogramas originales a ${fps} FPS.`
+      : `Video original verificado: ${frameCount} fotogramas a ${fps} FPS. Puedes anotar sin cargar predicciones.`
+    );
+  };
+  const populateFrameMapping = (videoMetadata) => {
+    $("sourceFps").value = String(state.fps || "");
+    $("sourceFrameCount").value = String(state.frameCount || "");
+    $("sourceWidth").value = String(state.width || videoMetadata.width);
+    $("sourceHeight").value = String(state.height || videoMetadata.height);
+  };
+  const validateAnnotationExport = (payload) => {
+    if (payload.schema_version !== 1 ||
+        (payload.record_type !== undefined &&
+         payload.record_type !== "human_identity_ground_truth") ||
+        (payload.annotation_policy !== undefined &&
+         typeof payload.annotation_policy !== "string") ||
+        typeof payload.video?.sha256 !== "string" ||
+        !Number.isInteger(payload.video.frame_count) ||
+        payload.video.frame_count < 1 ||
+        !Number.isInteger(payload.video.width) || payload.video.width < 1 ||
+        !Number.isInteger(payload.video.height) || payload.video.height < 1 ||
+        !Number.isFinite(payload.video.fps) || payload.video.fps <= 0 ||
+        !Array.isArray(payload.frames) ||
+        !Array.isArray(payload.exhaustive_frames)) {
+      throw new Error("Al JSON de anotaciones le faltan campos obligatorios del esquema.");
+    }
+    const records = new Map();
+    const identityTypes = new Map();
+    for (const record of payload.frames) {
+      if (!Number.isInteger(record.frame) || record.frame < 1 ||
+          record.frame > payload.video.frame_count ||
+          records.has(record.frame) || typeof record.exhaustive !== "boolean" ||
+          !Array.isArray(record.observations)) {
+        throw new Error("El JSON de anotaciones contiene un registro de fotograma no válido.");
+      }
+      const annotationIds = new Set();
+      const frameIdentities = new Set();
+      const eventIds = new Set();
+      for (const observation of record.observations) {
+        const {x1,y1,x2,y2} = observation;
+        const entityType = observation.entity_type || "player";
+        const entityTypes = ["player", "goalkeeper", "referee", "ball", "other"];
+        if (typeof observation.annotation_id !== "string" ||
+            !observation.annotation_id ||
+            annotationIds.has(observation.annotation_id) ||
+            !entityTypes.includes(entityType) ||
+            ![x1,y1,x2,y2].every(Number.isFinite) ||
+            !(0 <= x1 && x1 < x2 && x2 <= payload.video.width &&
+              0 <= y1 && y1 < y2 && y2 <= payload.video.height) ||
+            [observation.unknown,observation.ambiguous,observation.ignore]
+              .some((value) => typeof value !== "boolean") ||
+            [observation.unknown,observation.ambiguous,observation.ignore]
+              .filter(Boolean).length > 1) {
+          throw new Error(`Anotación no válida en el fotograma ${record.frame}.`);
+        }
+        const requiresIdentity = !(
+          observation.unknown || observation.ambiguous || observation.ignore
+        );
+        if ((requiresIdentity &&
+             (typeof observation.identity_id !== "string" ||
+              !observation.identity_id.trim())) ||
+            (!requiresIdentity && observation.identity_id !== null)) {
+          throw new Error(`Identidad no válida en el fotograma ${record.frame}.`);
+        }
+        if (requiresIdentity) {
+          const previousType = identityTypes.get(observation.identity_id);
+          if (previousType && previousType !== entityType) {
+            throw new Error(
+              `La identidad ${observation.identity_id} tiene tipos de objeto contradictorios.`
+            );
+          }
+          if (frameIdentities.has(observation.identity_id)) {
+            throw new Error(
+              `La identidad ${observation.identity_id} aparece más de una vez en el fotograma ${record.frame}.`
+            );
+          }
+          frameIdentities.add(observation.identity_id);
+          identityTypes.set(observation.identity_id, entityType);
+        }
+        annotationIds.add(observation.annotation_id);
+      }
+      const trajectoryEvents = record.events === undefined ? [] : record.events;
+      if (!Array.isArray(trajectoryEvents)) {
+        throw new Error(`Los eventos del fotograma ${record.frame} no son válidos.`);
+      }
+      for (const trajectoryEvent of trajectoryEvents) {
+        if (!trajectoryEvent || typeof trajectoryEvent.event_id !== "string" ||
+            !trajectoryEvent.event_id ||
+            eventIds.has(trajectoryEvent.event_id) ||
+            typeof trajectoryEvent.identity_id !== "string" ||
+            !trajectoryEvent.identity_id.trim() ||
+            !["appearance", "disappearance", "occlusion_start", "occlusion_end",
+              "crossing", "camera_change"]
+              .includes(trajectoryEvent.event_type) ||
+            (trajectoryEvent.notes !== undefined &&
+             typeof trajectoryEvent.notes !== "string")) {
+          throw new Error(`Evento de trayectoria no válido en el fotograma ${record.frame}.`);
+        }
+        eventIds.add(trajectoryEvent.event_id);
+      }
+      records.set(record.frame, record);
+    }
+    const exhaustive = payload.frames
+      .filter((record) => record.exhaustive)
+      .map((record) => record.frame)
+      .sort((a,b) => a-b);
+    if (JSON.stringify(exhaustive) !== JSON.stringify(payload.exhaustive_frames)) {
+      throw new Error("«exhaustive_frames» no coincide con los fotogramas marcados como exhaustivos.");
+    }
+  };
+  const normalizedHashContent = (value) => {
+    if (typeof value === "number") {
+      if (!Number.isFinite(value)) throw new Error("El Ground Truth contiene un número no finito.");
+      const text = String(value).toLowerCase();
+      const [coefficient, exponentText] = text.split("e");
+      const [whole, fraction = ""] = coefficient.replace("-", "").split(".");
+      const exponent = exponentText ? Number(exponentText) : 0;
+      const rawDigits = whole + fraction;
+      const leadingZeros = (rawDigits.match(/^0*/) || [""])[0].length;
+      const digits = rawDigits.slice(leadingZeros) || "0";
+      const decimalPosition = whole.length + exponent - leadingZeros;
+      const scaledPosition = decimalPosition + 6;
+      let rounded;
+      if (scaledPosition < 0) {
+        rounded = 0n;
+      } else {
+        const integerDigits = digits.slice(0, scaledPosition).padEnd(scaledPosition, "0");
+        const nextDigit = digits[scaledPosition] || "0";
+        rounded = BigInt(integerDigits || "0") + (nextDigit >= "5" ? 1n : 0n);
+      }
+      return `${text.startsWith("-") && rounded !== 0n ? "-" : ""}${rounded}`;
+    }
+    if (Array.isArray(value)) return value.map(normalizedHashContent);
+    if (value && typeof value === "object") {
+      return Object.fromEntries(Object.keys(value).sort().map((key) => [
+        key, normalizedHashContent(value[key])
+      ]));
+    }
+    return value;
+  };
+  const groundTruthHashContent = (payload) => ({
+    schema_version: payload.schema_version,
+    record_type: payload.record_type || "human_identity_ground_truth",
+    annotation_policy: payload.annotation_policy || "",
+    video: {
+      sha256: payload.video.sha256,
+      frame_count: payload.video.frame_count,
+      width: payload.video.width,
+      height: payload.video.height,
+      fps: payload.video.fps
+    },
+    exhaustive_frames: [...payload.exhaustive_frames].sort((a, b) => a - b),
+    frames: [...payload.frames].sort((a, b) => a.frame - b.frame)
+  });
+  const groundTruthContentSha256 = async (payload) => {
+    const canonical = JSON.stringify(normalizedHashContent(groundTruthHashContent(payload)));
+    return Array.from(new Uint8Array(await crypto.subtle.digest(
+      "SHA-256", new TextEncoder().encode(canonical)
+    ))).map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  };
+  const verifyFrozenGroundTruth = async (payload) => {
+    const freeze = payload.dataset?.freeze;
+    if (!freeze) return false;
+    if (freeze.status !== "frozen" || typeof freeze.frozen_at !== "string" ||
+        typeof freeze.policy !== "string" || !freeze.policy.trim() ||
+        !/^[0-9a-f]{64}$/.test(freeze.content_sha256 || "")) {
+      throw new Error("Los metadatos de congelación del Ground Truth no son válidos.");
+    }
+    const actual = await groundTruthContentSha256(payload);
+    if (actual !== freeze.content_sha256) {
+      throw new Error("La huella SHA-256 no coincide; el conjunto congelado fue modificado.");
+    }
+    return true;
+  };
+  const samplingPlanHashContent = (plan) => ({
+    schema_version: plan.schema_version,
+    record_type: plan.record_type,
+    dataset_id: plan.dataset_id,
+    protocol: plan.protocol,
+    video: {
+      sha256: plan.video.sha256,
+      frame_count: plan.video.frame_count,
+      width: plan.video.width,
+      height: plan.video.height,
+      fps: plan.video.fps
+    },
+    sampling: plan.sampling,
+    dense_windows: plan.dense_windows,
+    hard_cases: plan.hard_cases,
+    planned_frames: plan.planned_frames,
+    quality_requirements: plan.quality_requirements
+  });
+  const samplingPlanContentSha256 = async (plan) => {
+    const sortCanonical = (value) => {
+      if (Array.isArray(value)) return value.map(sortCanonical);
+      if (value && typeof value === "object") {
+        return Object.fromEntries(Object.keys(value).sort().map((key) => [
+          key, sortCanonical(value[key])
+        ]));
+      }
+      return value;
+    };
+    const canonical = JSON.stringify(sortCanonical(samplingPlanHashContent(plan)));
+    return Array.from(new Uint8Array(await crypto.subtle.digest(
+      "SHA-256", new TextEncoder().encode(canonical)
+    ))).map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  };
+  const validateSamplingPlanForVideo = async (plan) => {
+    if (plan?.schema_version !== 1 ||
+        plan.record_type !== "matchvision_annotation_sampling_plan" ||
+        plan.protocol?.protocol_id !== "matchvision-football-ground-truth" ||
+        plan.protocol?.version !== "1.0" ||
+        !Number.isInteger(plan.video?.frame_count) ||
+        !Array.isArray(plan.planned_frames) ||
+        !Array.isArray(plan.dense_windows) ||
+        !Array.isArray(plan.hard_cases)) {
+      throw new Error("El plan de muestreo no tiene el formato MatchVision esperado.");
+    }
+    if (!state.videoSha256 || plan.video.sha256 !== state.videoSha256 ||
+        plan.video.frame_count !== state.frameCount ||
+        plan.video.width !== state.width ||
+        plan.video.height !== state.height ||
+        Math.abs(Number(plan.video.fps) - state.fps) > 0.000001) {
+      throw new Error("El plan no corresponde al video original cargado.");
+    }
+    const actual = await samplingPlanContentSha256(plan);
+    if (actual !== plan.plan_sha256 ||
+        plan.plan_id !== `mv-plan-${actual.slice(0, 16)}`) {
+      throw new Error("La huella SHA-256 del plan de muestreo no coincide.");
+    }
+  };
+  $("samplingPlanFile").onchange = async (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+    try {
+      if (!state.videoSha256) {
+        throw new Error("Carga y verifica primero el video original.");
+      }
+      const plan = JSON.parse(await file.text());
+      await validateSamplingPlanForVideo(plan);
+      state.samplingPlan = plan;
+      state.samplingPlanSha256 = await hashFile(file);
+      setMessage(
+        `Plan cargado: ${plan.plan_id}. ${plan.planned_frames.length} fotogramas planificados.`
+      );
+    } catch (error) {
+      state.samplingPlan = null;
+      state.samplingPlanSha256 = null;
+      setMessage(`No se cargó el plan: ${error.message}`, true);
+    }
+  };
+  const parseCsv = (text) => {
+    const lines = text.split(/\r?\n/).filter((line) => line.trim());
+    if (!lines.length) return [];
+    const split = (line) => line.split(",").map((value) => value.trim());
+    const first = split(lines[0]);
+    const hasHeader = first.some((value) => /[a-z_]/i.test(value));
+    const headers = hasHeader ? first.map((value) => value.toLowerCase()) : null;
+    const rows = hasHeader ? lines.slice(1) : lines;
+    return rows.map((line, index) => {
+      const values = split(line);
+      if (headers) {
+        const row = Object.fromEntries(headers.map((key, i) => [key, values[i] ?? ""]));
+        const get = (...keys) => {
+          for (const key of keys) if (row[key] !== undefined && row[key] !== "") return row[key];
+          return "";
+        };
+        const frame = Number(get("frame"));
+        const x1 = Number(get("x1", "x")), y1 = Number(get("y1", "y"));
+        let x2 = get("x2") ? Number(get("x2")) : Number.NaN;
+        let y2 = get("y2") ? Number(get("y2")) : Number.NaN;
+        if (!Number.isFinite(x2)) x2 = x1 + Number(get("width", "w"));
+        if (!Number.isFinite(y2)) y2 = y1 + Number(get("height", "h"));
+        return {
+          frame, x1, y1, x2, y2, label: get("label") || "person",
+          temporal: get("temporal_track_id", "track_id", "id"),
+          persistent: get("persistent_id"),
+          classId: get("class_id") || "",
+          confidence: get("confidence") || ""
+        };
+      }
+      if (values.length < 6) throw new Error(`La línea ${index + 1} tiene muy pocas columnas.`);
+      const [frame, temporal, x, y, width, height, confidence = ""] = values;
+      return {
+        frame: Number(frame), x1: Number(x), y1: Number(y),
+        x2: Number(x) + Number(width), y2: Number(y) + Number(height),
+        label: "person", temporal, persistent: "", classId: "", confidence
+      };
+    }).filter((row) => Number.isInteger(row.frame) && row.frame > 0 &&
+      [row.x1,row.y1,row.x2,row.y2].every(Number.isFinite) && row.x2 > row.x1 && row.y2 > row.y1);
+  };
+  const syncFrame = () => {
+    const frame = frameKey();
+    $("frameNumber").value = String(frame);
+    if (state.fps > 0 && video.readyState >= 1) {
+      const targetTime = (frame - 1) / state.fps;
+      if (Math.abs(video.currentTime - targetTime) > 0.25 / state.fps) {
+        state.requestedFrame = frame;
+        video.currentTime = targetTime;
+      } else {
+        state.requestedFrame = null;
+      }
+    }
+    const record = state.frames.get(frame);
+    $("exhaustive").checked = Boolean(record?.exhaustive);
+    $("reviewStatus").value = record?.review_status || "pending";
+    $("reviewNote").value = record?.review_note || "";
+    state.selectedDetection = null; state.selectedAnnotation = null;
+    $("entityType").value = "player";
+    $("identity").value = ""; $("unknown").checked = false; $("ambiguous").checked = false;
+    $("ignore").checked = false;
+    $("notes").value = "";
+    $("selectedInfo").textContent = "Dibuja un recuadro manualmente o usa una sugerencia solo como referencia visual.";
+    renderList(); render();
+    renderReviewAssistance();
+    renderIdentityManager();
+    const currentCase = state.fragments[state.caseIndex];
+    const priority = currentCase?.priority;
+    $("caseInfo").textContent = currentCase
+      ? `Caso ${state.caseIndex + 1} de ${state.fragments.length} — ${currentCase.fragment_id} | ${priorityLabels[priority] || `Prioridad ${priority ?? "sin indicar"}`} | fotogramas ${currentCase.start_frame}–${currentCase.end_frame} | evento ${currentCase.event_frame}. ${reviewEventLabel(currentCase)}`
+      : "No hay casos priorizados cargados.";
+    updateFrameStatus();
+  };
+  const appendEvidenceImage = (container, evidence, label) => {
+    if (!evidence || typeof evidence.path !== "string" ||
+        !evidence.path.startsWith("/outputs/identity-review/") ||
+        !evidence.path.endsWith(".jpg") ||
+        evidence.path.split("/").includes("..")) return;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = `Ir al fotograma ${evidence.frame ?? ""} — ${label}`;
+    if (Number.isInteger(evidence.frame)) {
+      button.onclick = () => setVideoFrame(evidence.frame);
+    } else {
+      button.disabled = true;
+    }
+    const image = document.createElement("img");
+    image.src = new URL(evidence.path, location.origin).href;
+    image.alt = label;
+    image.loading = "lazy";
+    image.style.width = "100%";
+    image.style.maxHeight = "180px";
+    image.style.objectFit = "contain";
+    container.append(button, image);
+  };
+  const renderReviewAssistance = () => {
+    const container = $("reviewAssistance");
+    container.replaceChildren();
+    updateReviewDecisionSummary();
+    const currentCase = state.fragments[state.caseIndex];
+    if (!state.proposalsByCase.size) {
+      container.textContent = "Carga el JSON de apoyo visual para ver fotogramas y comparaciones.";
+      return;
+    }
+    if (!currentCase) {
+      container.textContent = "Carga los casos priorizados para mostrar la evidencia asociada a cada caso.";
+      return;
+    }
+    const evidence = state.proposalsByCase.get(currentCase.fragment_id);
+    if (!evidence) {
+      container.textContent = "El archivo no contiene evidencia para este caso.";
+      return;
+    }
+    const intro = document.createElement("p");
+    intro.textContent = "Fotogramas relevantes con recuadros del tracker. Las etiquetas T son referencias temporales, no identidades.";
+    container.append(intro);
+    if (evidence.group_overview?.length) {
+      const groups = document.createElement("p");
+      groups.textContent = evidence.group_overview.map((group) =>
+        `${group.candidate_group_id}: tracks ${group.track_ids.join(", ")} ` +
+        `(${group.review_status === "candidate_only" ? "grupo candidato, no identidad" : "conflicto temporal; revisar"})`
+      ).join(" · ");
+      container.append(groups);
+    }
+    for (const item of evidence.frame_evidence || []) {
+      appendEvidenceImage(container, item, `caso ${currentCase.fragment_id}`);
+    }
+    if (evidence.possible_camera_change_frames?.length) {
+      const notice = document.createElement("p");
+      notice.className = "warning";
+      notice.textContent = `Posible cambio brusco de escena en los fotogramas: ${evidence.possible_camera_change_frames.join(", ")}.`;
+      container.append(notice);
+    }
+    if (evidence.associations_excluded_by_scene_change) {
+      const notice = document.createElement("p");
+      notice.className = "warning";
+      notice.textContent =
+        `Se descartaron ${evidence.associations_excluded_by_scene_change} ` +
+        "comparaciones que atravesaban un posible cambio de escena.";
+      container.append(notice);
+    }
+    for (const reason of evidence.ambiguity_reasons || []) {
+      const notice = document.createElement("p");
+      notice.className = "warning";
+      notice.textContent = reason;
+      container.append(notice);
+    }
+    if (!(evidence.candidate_associations || []).length) {
+      const none = document.createElement("p");
+      none.textContent = "No hay comparaciones de apariencia con suficiente evidencia visual para este caso.";
+      container.append(none);
+    }
+    for (const proposal of evidence.candidate_associations) {
+      const comparison = document.createElement("section");
+      comparison.className = "proposal";
+      const heading = document.createElement("p");
+      const ids = proposal.track_ids || [];
+      const score = Number(proposal.heuristic_score);
+      const relationLabel = {
+        simultaneous_tracks: `Tracks T:${ids[0]} y T:${ids[1]} coinciden en el tiempo; comparación visual, no propuesta de misma persona.`,
+        same_track_continuity: `Continuidad del track T:${ids[0]} antes y después del hueco.`,
+        existing_reid_link: `Asociación ReID existente entre T:${ids[0]} y T:${ids[1]}, pendiente de revisión.`,
+        candidate_same_player: `Posible correspondencia entre T:${ids[0]} y T:${ids[1]}, pendiente de revisión.`
+      }[proposal.relation] || `Comparación visual entre tracks T:${ids[0]} y T:${ids[1]}.`;
+      heading.textContent =
+        `${relationLabel} Score heurístico ` +
+        `${Number.isFinite(score) ? score.toFixed(3) : "no disponible"} ` +
+        `(${proposal.confidence_level || "sin nivel"}; no es una probabilidad).`;
+      comparison.append(heading);
+      const metrics = proposal.evidence || {};
+      const detail = document.createElement("p");
+      detail.textContent =
+        `HSV ${metrics.similarity_hsv ?? "—"} · HOG ${metrics.similarity_hog ?? "—"} · ` +
+        `OSNet ${metrics.similarity_embedding ?? "—"} · ` +
+        `movimiento ${metrics.similarity_motion ?? "—"} · gap ${proposal.gap_frames ?? "—"} fotogramas.`;
+      comparison.append(detail);
+      const methodLabels = {
+        hsv_hog: "HSV/HOG",
+        embedding: "Embeddings OSNet",
+        hybrid: "Híbrido"
+      };
+      const methodScores = Object.entries(proposal.method_scores || {})
+        .map(([method, value]) => `${methodLabels[method] || method}: ${value}`)
+        .join(" · ");
+      if (methodScores) {
+        const methodDetail = document.createElement("p");
+        methodDetail.textContent =
+          `Scores comparativos (no son probabilidades): ${methodScores}. ` +
+          `Ordenado por ${methodLabels[proposal.score_method] || proposal.score_method || "método no indicado"}.`;
+        comparison.append(methodDetail);
+      }
+      for (let side = 0; side < 2; side++) {
+        const trackId = proposal.track_ids[side];
+        const anchorFrame = proposal.frames[side];
+        const context = document.createElement("div");
+        context.className = "row";
+        const label = document.createElement("span");
+        label.textContent = `Contexto de T:${trackId}:`;
+        context.append(label);
+        for (const [offset, description] of [
+          [-5, "−5"], [0, "aparición"], [5, "+5"]
+        ]) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.textContent = `${description} · f${anchorFrame + offset}`;
+          button.onclick = () => setVideoFrame(anchorFrame + offset);
+          context.append(button);
+        }
+        comparison.append(context);
+      }
+      if (proposal.candidate_group_id) {
+        const group = state.proposalGroups.get(proposal.candidate_group_id);
+        const groupLabel = document.createElement("p");
+        groupLabel.textContent = group
+          ? `${group.candidate_group_id}: grupo exploratorio de ${group.track_ids.length} tracks, no identidad.`
+          : `Grupo exploratorio ${proposal.candidate_group_id}, no identidad.`;
+        comparison.append(groupLabel);
+        if (group?.temporal_conflicts?.length) {
+          const warning = document.createElement("p");
+          warning.className = "warning";
+          warning.textContent =
+            `Conflicto temporal: tracks ${group.temporal_conflicts.map((item) =>
+              item.track_ids.join(" y ")
+            ).join("; ")} aparecen simultáneamente. No se resuelve automáticamente.`;
+          comparison.append(warning);
+        }
+      }
+      for (const crop of proposal.crop_comparison || []) {
+        const label = `track T:${crop.track_id}, fotograma ${crop.frame}`;
+        appendEvidenceImage(comparison, crop, label);
+      }
+      const decision = state.reviewDecisions.get(proposal.proposal_id);
+      const decisionStatus = document.createElement("p");
+      decisionStatus.className = decision?.decision === "accepted"
+        ? "decision-accepted"
+        : decision?.decision === "rejected" || decision?.decision === "uncertain"
+          ? "decision-rejected" : "";
+      decisionStatus.textContent = decision
+        ? `Decisión humana: ${decisionLabel(proposal, decision.decision)} · ${new Date(decision.updated_at).toLocaleString()}`
+        : "Decisión humana: pendiente.";
+      comparison.append(decisionStatus);
+      const decisionControls = document.createElement("div");
+      decisionControls.className = "row";
+      const accept = document.createElement("button");
+      accept.type = "button";
+      accept.textContent = proposal.relation === "simultaneous_tracks"
+        ? "Confirmar cruce para revisar"
+        : proposal.relation === "same_track_continuity"
+          ? "Confirmar continuidad del track"
+          : "Aceptar como hipótesis de misma persona";
+      const reject = document.createElement("button");
+      reject.type = "button";
+      reject.textContent = proposal.relation === "simultaneous_tracks"
+        ? "Descartar cruce candidato"
+        : proposal.relation === "same_track_continuity"
+          ? "Descartar continuidad candidata"
+          : "Rechazar hipótesis de misma persona";
+      const reset = document.createElement("button");
+      reset.type = "button";
+      reset.textContent = "Dejar pendiente";
+      reset.disabled = decision?.decision === "pending";
+      reset.onclick = () => recordReviewDecision(proposal, "pending");
+      const uncertain = document.createElement("button");
+      uncertain.type = "button";
+      uncertain.textContent = "Marcar dudosa";
+      uncertain.onclick = () => recordReviewDecision(proposal, "uncertain");
+      decisionControls.append(accept, reject, uncertain, reset);
+      comparison.append(decisionControls);
+      const noteLabel = document.createElement("label");
+      noteLabel.textContent = "Nota de revisión (opcional)";
+      const note = document.createElement("input");
+      note.type = "text";
+      note.value = decision?.notes || "";
+      note.maxLength = 500;
+      noteLabel.append(note);
+      comparison.append(noteLabel);
+      accept.onclick = () => recordReviewDecision(proposal, "accepted", note.value);
+      reject.onclick = () => recordReviewDecision(proposal, "rejected", note.value);
+      reset.onclick = () => recordReviewDecision(proposal, "pending", note.value);
+      uncertain.onclick = () => recordReviewDecision(proposal, "uncertain", note.value);
+      const identityAssignment = document.createElement("div");
+      identityAssignment.className = "row";
+      const identitySelect = document.createElement("select");
+      identitySelect.setAttribute("aria-label", "Identidad humana para asignar ambos tracks");
+      const emptyIdentity = document.createElement("option");
+      emptyIdentity.value = "";
+      emptyIdentity.textContent = "Selecciona un ID de identidad";
+      identitySelect.append(emptyIdentity);
+      for (const identity of [...state.identities.values()].sort((a, b) =>
+        a.identity_id.localeCompare(b.identity_id)
+      )) {
+        const option = document.createElement("option");
+        option.value = identity.identity_id;
+        option.textContent = `${identity.identity_id}${identity.label ? ` — ${identity.label}` : ""}`;
+        identitySelect.append(option);
+      }
+      const assignmentButton = document.createElement("button");
+      assignmentButton.type = "button";
+      assignmentButton.textContent = `Confirmar T:${ids[0]} y T:${ids[1]} como la misma identidad`;
+      const assignmentEligible = ["candidate_same_player", "existing_reid_link"]
+        .includes(proposal.relation);
+      assignmentButton.disabled = decision?.decision !== "accepted" || !assignmentEligible;
+      if (!assignmentEligible) {
+        assignmentButton.title = "Los cruces simultáneos y la continuidad de un único track no confirman enlaces de identidad.";
+      } else if (decision?.decision !== "accepted") {
+        assignmentButton.title = "Acepta primero la hipótesis mediante una decisión humana.";
+      }
+      const assignmentMessage = document.createElement("span");
+      assignmentMessage.className = "small";
+      const assignedIds = [...new Set(ids.map((trackId) =>
+        state.trackAssignments.get(normalizeTrackId(trackId))?.identity_id
+      ).filter(Boolean))];
+      assignmentMessage.textContent = assignedIds.length
+        ? `Asignaciones actuales: ${assignedIds.join(", ")}`
+        : "Esta acción crea una asignación humana confirmada; no copia el score.";
+      assignmentButton.onclick = async () => {
+        if (!identitySelect.value) {
+          setMessage("Selecciona o crea primero un ID de identidad humana.", true);
+          return;
+        }
+        await assignProposalToIdentity(proposal, identitySelect.value);
+      };
+      identityAssignment.append(identitySelect, assignmentButton, assignmentMessage);
+      comparison.append(identityAssignment);
+      if (proposal.duplicate_group_id &&
+          hasContradictoryDuplicateDecision(proposal.duplicate_group_id)) {
+        const duplicateWarning = document.createElement("p");
+        duplicateWarning.className = "warning";
+        duplicateWarning.textContent =
+          "Hay decisiones humanas incompatibles en otra aparición de este mismo par de tracks; revísalas individualmente.";
+        comparison.append(duplicateWarning);
+      }
+      if (proposal.duplicate_occurrence_count > 1) {
+        const duplicateInfo = document.createElement("p");
+        duplicateInfo.textContent =
+          `Este par de tracks aparece en ${proposal.duplicate_occurrence_count} propuestas; ` +
+          "cada decisión se registra por separado.";
+        comparison.append(duplicateInfo);
+      }
+      const relationTypes = state.duplicateRelationTypes.get(
+        proposal.duplicate_group_id
+      ) || [];
+      if (relationTypes.length > 1) {
+        const relationWarning = document.createElement("p");
+        relationWarning.className = "warning";
+        relationWarning.textContent =
+          `Este par aparece con etiquetas de relación distintas (${relationTypes.join(", ")}). ` +
+          "No implica una identidad contradictoria; revisa cada propuesta por separado.";
+        comparison.append(relationWarning);
+      }
+      container.append(comparison);
+    }
+    for (const track of evidence.track_appearances || []) {
+      const details = document.createElement("details");
+      const summary = document.createElement("summary");
+      summary.textContent = `Ver apariciones muestreadas del track T:${track.track_id}`;
+      details.append(summary);
+      for (const sample of track.samples || []) {
+        appendEvidenceImage(details, sample, `track T:${track.track_id}`);
+      }
+      container.append(details);
+    }
+    updateReviewDecisionSummary();
+  };
+  const allProposals = () => [...state.proposalsByCase.values()]
+    .flatMap((item) => item.candidate_associations || []);
+  const decisionLabel = (proposal, decision) => {
+    if (decision === "pending") return "caso dejado pendiente para revisión";
+    if (proposal.relation === "simultaneous_tracks") {
+      return decision === "accepted" ? "cruce candidato confirmado para revisión" : "cruce candidato descartado";
+    }
+    if (proposal.relation === "same_track_continuity") {
+      return decision === "accepted" ? "continuidad candidata confirmada" : "continuidad candidata descartada";
+    }
+    if (decision === "accepted") return "hipótesis aceptada para revisión humana";
+    if (decision === "uncertain") return "propuesta marcada como dudosa";
+    return "hipótesis de asociación rechazada";
+  };
+  const hasContradictoryDuplicateDecision = (duplicateGroupId) => {
+    const decisions = allProposals()
+      .filter((item) => item.duplicate_group_id === duplicateGroupId)
+      .map((item) => state.reviewDecisions.get(item.proposal_id)?.decision);
+    return decisions.includes("accepted") && decisions.includes("rejected");
+  };
+  const updateReviewDecisionSummary = () => {
+    const activeProposalIds = new Set(allProposals().map((item) => item.proposal_id));
+    const values = [...state.reviewDecisions.values()].filter((item) =>
+      activeProposalIds.has(item.proposal_id)
+    );
+    const accepted = values.filter((item) => item.decision === "accepted").length;
+    const rejected = values.filter((item) => item.decision === "rejected").length;
+    const uncertain = values.filter((item) => item.decision === "uncertain").length;
+    const notReviewed = Math.max(0, activeProposalIds.size - values.length);
+    const pending = Math.max(
+      0, activeProposalIds.size - accepted - rejected - uncertain
+    );
+    $("reviewDecisionSummary").textContent =
+      `Revisión humana: ${accepted} hipótesis aceptadas, ${rejected} rechazadas, ` +
+      `${uncertain} dudosas y ${pending} pendientes (${notReviewed} sin revisar). ` +
+      `Ground Truth: ${state.trackAssignments.size} tracks asignados a ${state.identities.size} identidades. ` +
+      "Las hipótesis aceptadas no son Ground Truth.";
+    $("undoHumanAction").disabled = !state.actionHistory.some((action) =>
+      action.action_type !== "undo" &&
+      !state.actionHistory.some((undo) =>
+        undo.action_type === "undo" && undo.undone_action_id === action.action_id
+      )
+    );
+  };
+  const actionId = () => crypto.randomUUID();
+  const renderHumanState = () => {
+    renderReviewAssistance();
+    renderIdentityManager();
+    updateReviewDecisionSummary();
+  };
+  const recordProposalDecision = (proposal, decision, notes, previous) => {
+    const timestamp = new Date().toISOString();
+    const historyEntry = {
+      proposal_id: proposal.proposal_id,
+      case_id: proposal.case_id,
+      relation: proposal.relation,
+      track_ids: proposal.track_ids,
+      frames: proposal.frames,
+      previous_decision: previous,
+      decision,
+      heuristic_score: proposal.heuristic_score,
+      proposal_file_sha256: state.proposalFileSha256,
+      notes: notes.trim(),
+      decided_at: timestamp
+    };
+    state.reviewDecisionHistory.push(historyEntry);
+    state.actionHistory.push({
+      action_id: actionId(),
+      action_type: "proposal_decision",
+      proposal_id: proposal.proposal_id,
+      previous_decision: previous,
+      decision,
+      notes: notes.trim(),
+      at: timestamp
+    });
+  };
+  const recordReviewDecision = async (proposal, decision, notes = "") => {
+    if (!["accepted", "rejected", "uncertain", "pending"].includes(decision)) {
+      throw new Error("Estado de revisión humana no reconocido.");
+    }
+    const savedDecision = state.reviewDecisions.get(proposal.proposal_id);
+    const previous = savedDecision?.decision || "not_reviewed";
+    if (savedDecision && previous === decision) return;
+    state.reviewDecisions.set(proposal.proposal_id, {
+      proposal_id: proposal.proposal_id,
+      case_id: proposal.case_id,
+      track_ids: proposal.track_ids,
+      frames: proposal.frames,
+      decision,
+      notes: notes.trim(),
+      proposal_file_sha256: state.proposalFileSha256,
+      updated_at: new Date().toISOString()
+    });
+    recordProposalDecision(proposal, decision, notes, previous);
+    renderHumanState();
+    const saved = await persistAnnotations();
+    if (saved) {
+      const label = decision === "pending"
+        ? "pendiente"
+        : decision === "accepted" ? "aceptada como hipótesis"
+          : decision === "uncertain" ? "marcada como dudosa" : "rechazada";
+      setMessage(`Decisión humana «${label}» guardada. No equivale por sí sola a Ground Truth.`);
+    }
+  };
+  const assignProposalToIdentity = async (proposal, identityId) => {
+    if (state.reviewDecisions.get(proposal.proposal_id)?.decision !== "accepted") {
+      setMessage("Primero acepta manualmente esta propuesta como hipótesis; luego podrás confirmar la identidad.", true);
+      return;
+    }
+    if (!["candidate_same_player", "existing_reid_link"].includes(proposal.relation)) {
+      setMessage("Este tipo de propuesta no puede confirmar una identidad común.", true);
+      return;
+    }
+    const identity = state.identities.get(identityId);
+    if (!identity) {
+      setMessage("El ID de identidad seleccionado ya no existe; vuelve a seleccionar uno.", true);
+      return;
+    }
+    const trackIds = proposal.track_ids.map(normalizeTrackId);
+    if (new Set(trackIds).size !== trackIds.length ||
+        trackIds.some((trackId) => !state.trackFrames.has(trackId))) {
+      setMessage("No se pueden confirmar los tracks: falta el CSV de trayectorias válido o la propuesta contiene IDs repetidos.", true);
+      return;
+    }
+    const conflict = identityAssignmentConflict(trackIds, identityId);
+    if (conflict) {
+      setMessage(`${conflict} La asignación fue bloqueada para evitar Ground Truth contradictorio.`, true);
+      return;
+    }
+    const previousAssignments = trackIds.map((trackId) => {
+      const previous = state.trackAssignments.get(trackId);
+      return previous ? {...previous} : null;
+    });
+    const reassigned = previousAssignments.some((previous) =>
+      previous && previous.identity_id !== identityId
+    );
+    if (reassigned && !confirm(
+      `Uno o más tracks ya pertenecen a otra identidad. ¿Reasignar T:${trackIds.join(" y T:")} a ${identityId}? El cambio quedará en el historial.`
+    )) return;
+    const timestamp = new Date().toISOString();
+    const changes = trackIds.map((trackId, index) => {
+      const evidenceIndex = proposal.track_ids.findIndex((value) =>
+        normalizeTrackId(value) === trackId
+      );
+      const previous = previousAssignments[index];
+      const currentEvidence = {
+        proposal_id: proposal.proposal_id,
+        case_id: proposal.case_id,
+        evidence_frames: [proposal.frames[evidenceIndex]],
+        proposal_file_sha256: state.proposalFileSha256,
+        decision: "human_confirmed_identity_assignment",
+        confirmed_at: timestamp
+      };
+      const sameIdentity = previous?.identity_id === identityId;
+      const evidenceProposals = sameIdentity
+        ? [...(previous.evidence_proposals || []), currentEvidence]
+        : [currentEvidence];
+      const assignment = {
+        track_id: trackId,
+        identity_id: identityId,
+        proposal_id: proposal.proposal_id,
+        case_id: proposal.case_id,
+        evidence_frames: [...new Set(evidenceProposals.flatMap((item) =>
+          item.evidence_frames
+        ))].sort((a, b) => a - b),
+        evidence_proposals: evidenceProposals,
+        proposal_file_sha256: state.proposalFileSha256,
+        decision: "human_confirmed_identity_assignment",
+        status: "validated_manual",
+        created_at: previous?.created_at || timestamp,
+        updated_at: timestamp
+      };
+      return {
+        track_id: trackId,
+        previous_assignment: previousAssignments[index],
+        new_assignment: assignment
+      };
+    });
+    for (const change of changes) {
+      state.trackAssignments.set(change.track_id, change.new_assignment);
+      state.identityHistory.push({
+        action: change.previous_assignment ? "reassignment" : "assignment",
+        track_id: change.track_id,
+        previous_identity_id: change.previous_assignment?.identity_id || null,
+        identity_id: identityId,
+        proposal_id: proposal.proposal_id,
+        evidence_frames: change.new_assignment.evidence_frames,
+        status: "validated_manual",
+        decided_at: timestamp
+      });
+    }
+    state.actionHistory.push({
+      action_id: actionId(),
+      action_type: "track_assignment",
+      proposal_id: proposal.proposal_id,
+      identity_id: identityId,
+      changes,
+      at: timestamp
+    });
+    renderHumanState();
+    const saved = await persistAnnotations();
+    if (saved) {
+      setMessage(
+        `Tracks T:${trackIds.join(" y T:")} asignados manualmente a ${identityId}; registrados como Ground Truth con evidencia y procedencia.`
+      );
+    }
+  };
+  const undoLastHumanAction = async () => {
+    const undoneIds = new Set(state.actionHistory
+      .filter((action) => action.action_type === "undo")
+      .map((action) => action.undone_action_id));
+    const action = [...state.actionHistory].reverse().find((item) =>
+      item.action_type !== "undo" && !undoneIds.has(item.action_id)
+    );
+    if (!action) {
+      setMessage("No hay decisiones humanas recientes para deshacer.", true);
+      return;
+    }
+    if (action.action_type === "proposal_decision") {
+      if (action.previous_decision === "not_reviewed") {
+        state.reviewDecisions.delete(action.proposal_id);
+      } else {
+        const proposal = allProposals().find((item) =>
+          item.proposal_id === action.proposal_id
+        );
+        state.reviewDecisions.set(action.proposal_id, {
+          proposal_id: action.proposal_id,
+          case_id: proposal?.case_id,
+          track_ids: proposal?.track_ids || [],
+          frames: proposal?.frames || [],
+          decision: action.previous_decision,
+          notes: "",
+          proposal_file_sha256: state.proposalFileSha256,
+          updated_at: new Date().toISOString()
+        });
+      }
+    } else if (action.action_type === "track_assignment") {
+      for (const change of action.changes) {
+        if (change.previous_assignment) {
+          state.trackAssignments.set(change.track_id, change.previous_assignment);
+        } else {
+          state.trackAssignments.delete(change.track_id);
+        }
+        state.identityHistory.push({
+          action: "undo",
+          track_id: change.track_id,
+          previous_identity_id: change.new_assignment.identity_id,
+          identity_id: change.previous_assignment?.identity_id || null,
+          proposal_id: action.proposal_id,
+          evidence_frames: change.new_assignment.evidence_frames,
+          status: "correction",
+          decided_at: new Date().toISOString()
+        });
+      }
+    } else if (action.action_type === "identity_created") {
+      const inUse = [...state.trackAssignments.values()].some((assignment) =>
+        assignment.identity_id === action.identity_id
+      );
+      if (inUse) {
+        setMessage("No se puede deshacer la creación: la identidad tiene tracks asignados. Deshaz primero esas asignaciones.", true);
+        return;
+      }
+      state.identities.delete(action.identity_id);
+      state.identityHistory.push({
+        action: "undo_identity_creation",
+        identity_id: action.identity_id,
+        status: "correction",
+        decided_at: new Date().toISOString()
+      });
+    }
+    const timestamp = new Date().toISOString();
+    if (action.action_type === "proposal_decision") {
+      const proposal = allProposals().find((item) =>
+        item.proposal_id === action.proposal_id
+      );
+      state.reviewDecisionHistory.push({
+        proposal_id: action.proposal_id,
+        case_id: proposal?.case_id,
+        relation: proposal?.relation,
+        track_ids: proposal?.track_ids || [],
+        frames: proposal?.frames || [],
+        previous_decision: action.decision,
+        decision: action.previous_decision,
+        heuristic_score: proposal?.heuristic_score,
+        proposal_file_sha256: state.proposalFileSha256,
+        notes: "",
+        decided_at: timestamp,
+        undo: true
+      });
+    }
+    state.actionHistory.push({
+      action_id: actionId(),
+      action_type: "undo",
+      undone_action_id: action.action_id,
+      at: timestamp
+    });
+    renderHumanState();
+    if (await persistAnnotations()) {
+      setMessage("Se deshizo la última decisión humana; el cambio y su trazabilidad se guardaron.");
+    }
+  };
+  const normalizeTrackId = (trackId) => String(trackId);
+  const isTestOnlyIdentity = (identityId) =>
+    String(identityId || "").toUpperCase().startsWith("TEST-ONLY-");
+  const overlappingFrames = (firstTrackId, secondTrackId) => {
+    const first = state.trackFrames.get(normalizeTrackId(firstTrackId)) || new Set();
+    const second = state.trackFrames.get(normalizeTrackId(secondTrackId)) || new Set();
+    return [...first].filter((frame) => second.has(frame)).sort((a, b) => a - b);
+  };
+  const identityAssignmentConflict = (trackIds, identityId) => {
+    const overlap = overlappingFrames(trackIds[0], trackIds[1]);
+    if (overlap.length) {
+      return `Los tracks T:${trackIds[0]} y T:${trackIds[1]} coinciden en ${overlap.length} fotogramas (por ejemplo, f${overlap[0]}). No se pueden confirmar como una misma identidad.`;
+    }
+    for (const trackId of trackIds) {
+      for (const assignment of state.trackAssignments.values()) {
+        if (assignment.identity_id !== identityId ||
+            normalizeTrackId(assignment.track_id) === normalizeTrackId(trackId) ||
+            trackIds.some((candidate) =>
+              normalizeTrackId(candidate) === normalizeTrackId(assignment.track_id)
+            )) continue;
+        const shared = overlappingFrames(trackId, assignment.track_id);
+        if (shared.length) {
+          return `El track T:${trackId} coincide con T:${assignment.track_id}, ya asignado a ${identityId}, en f${shared[0]}.`;
+        }
+      }
+    }
+    return "";
+  };
+  const manualTrackIdentityConflict = (trackId, identityId) => {
+    for (const assignment of state.trackAssignments.values()) {
+      if (normalizeTrackId(assignment.track_id) === trackId ||
+          assignment.identity_id !== identityId) continue;
+      const overlap = overlappingFrames(trackId, assignment.track_id);
+      if (overlap.length) {
+        return `T:${trackId} coincide con T:${assignment.track_id}, ya asignado a ${identityId}, en f${overlap[0]}.`;
+      }
+    }
+    return "";
+  };
+  const assignManualTrackToIdentity = async (trackId, identityId, evidenceFrame) => {
+    const frames = state.trackFrames.get(trackId);
+    if (!frames || !frames.has(evidenceFrame)) {
+      setMessage(`El track T:${trackId} no tiene una observación en f${evidenceFrame}.`, true);
+      return;
+    }
+    if (!state.identities.has(identityId)) {
+      setMessage("Selecciona o crea primero un ID de identidad humana.", true);
+      return;
+    }
+    const conflict = manualTrackIdentityConflict(trackId, identityId);
+    if (conflict) {
+      setMessage(`${conflict} La asignación fue bloqueada.`, true);
+      return;
+    }
+    const previous = state.trackAssignments.get(trackId);
+    if (previous && previous.identity_id !== identityId && !confirm(
+      `T:${trackId} ya está asignado a ${previous.identity_id}. ¿Reasignarlo a ${identityId}? El cambio quedará en el historial.`
+    )) return;
+    const timestamp = new Date().toISOString();
+    const assignment = {
+      track_id: trackId,
+      identity_id: identityId,
+      proposal_id: null,
+      case_id: null,
+      evidence_frames: [...new Set([
+        ...(previous?.identity_id === identityId &&
+            previous.annotation_source === "independent_human_track_annotation"
+          ? previous.evidence_frames || [] : []),
+        evidenceFrame
+      ])].sort((a, b) => a - b),
+      evidence_proposals: [],
+      annotation_source: "independent_human_track_annotation",
+      proposal_file_sha256: state.proposalFileSha256,
+      decision: "human_confirmed_identity_assignment",
+      status: "validated_manual",
+      created_at: previous?.created_at || timestamp,
+      updated_at: timestamp
+    };
+    const change = {
+      track_id: trackId,
+      previous_assignment: previous ? {...previous} : null,
+      new_assignment: assignment
+    };
+    state.trackAssignments.set(trackId, assignment);
+    state.identityHistory.push({
+      action: previous ? "reassignment" : "independent_track_assignment",
+      track_id: trackId,
+      previous_identity_id: previous?.identity_id || null,
+      identity_id: identityId,
+      proposal_id: null,
+      evidence_frames: assignment.evidence_frames,
+      annotation_source: assignment.annotation_source,
+      status: "validated_manual",
+      decided_at: timestamp
+    });
+    state.actionHistory.push({
+      action_id: actionId(),
+      action_type: "track_assignment",
+      proposal_id: null,
+      identity_id: identityId,
+      changes,
+      at: timestamp
+    });
+    renderHumanState();
+    if (await persistAnnotations()) {
+      setMessage(`T:${trackId} asignado manualmente a ${identityId} con evidencia en f${evidenceFrame}.`);
+    }
+  };
+  const renderManualEvidenceFrames = (preferredFrame = null) => {
+    const trackId = $("manualTrackSelect").value;
+    const evidenceSelect = $("manualEvidenceFrame");
+    const previousFrame = preferredFrame ?? Number(evidenceSelect.value);
+    evidenceSelect.replaceChildren();
+    const frames = [...(state.trackFrames.get(trackId) || [])]
+      .sort((a, b) => a - b);
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = frames.length
+      ? "Selecciona un fotograma observado"
+      : "Selecciona un track primero";
+    evidenceSelect.append(placeholder);
+    for (const frame of frames) {
+      const option = document.createElement("option");
+      option.value = String(frame);
+      option.textContent = `Fotograma ${frame}`;
+      evidenceSelect.append(option);
+    }
+    if (frames.includes(previousFrame)) {
+      evidenceSelect.value = String(previousFrame);
+    } else if (frames.includes(frameKey())) {
+      evidenceSelect.value = String(frameKey());
+    }
+  };
+  const renderIdentityManager = () => {
+    const host = $("identityList");
+    host.replaceChildren();
+    const historyHost = $("humanHistory");
+    historyHost.replaceChildren();
+    const groundTruthAssignments = [...state.trackAssignments.values()].filter(
+      (assignment) => !isTestOnlyIdentity(assignment.identity_id)
+    );
+    $("identitySummary").textContent =
+      `Identidades locales: ${state.identities.size} · tracks con asignación humana: ` +
+      `${groundTruthAssignments.length} · identidades TEST-ONLY excluidas de Ground Truth: ` +
+      `${state.identities.size - [...state.identities.values()].filter((identity) =>
+        !isTestOnlyIdentity(identity.identity_id)
+      ).length}.`;
+    const manualTrackSelect = $("manualTrackSelect");
+    const previousTrack = manualTrackSelect.value;
+    manualTrackSelect.replaceChildren();
+    const noTrack = document.createElement("option");
+    noTrack.value = "";
+    noTrack.textContent = state.trackFrames.size
+      ? "Selecciona un track revisado"
+      : "Carga las trayectorias CSV";
+    manualTrackSelect.append(noTrack);
+    for (const trackId of [...state.trackFrames.keys()].sort((a, b) =>
+      Number(a) - Number(b)
+    )) {
+      const option = document.createElement("option");
+      option.value = trackId;
+      const assignment = state.trackAssignments.get(trackId);
+      option.textContent = assignment
+        ? `T:${trackId} — ${assignment.identity_id}`
+        : `T:${trackId} — sin asignar`;
+      manualTrackSelect.append(option);
+    }
+    if (state.trackFrames.has(previousTrack)) {
+      manualTrackSelect.value = previousTrack;
+    }
+    const manualIdentitySelect = $("manualIdentitySelect");
+    const previousIdentity = manualIdentitySelect.value;
+    manualIdentitySelect.replaceChildren();
+    const noIdentity = document.createElement("option");
+    noIdentity.value = "";
+    noIdentity.textContent = "Selecciona un ID de identidad";
+    manualIdentitySelect.append(noIdentity);
+    for (const identity of [...state.identities.values()].sort((a, b) =>
+      a.identity_id.localeCompare(b.identity_id)
+    )) {
+      const option = document.createElement("option");
+      option.value = identity.identity_id;
+      option.textContent = identity.identity_id;
+      manualIdentitySelect.append(option);
+    }
+    if (state.identities.has(previousIdentity)) {
+      manualIdentitySelect.value = previousIdentity;
+    }
+    renderManualEvidenceFrames();
+    for (const identity of [...state.identities.values()].sort((a, b) =>
+      a.identity_id.localeCompare(b.identity_id)
+    )) {
+      const tracks = [...state.trackAssignments.values()]
+        .filter((assignment) => assignment.identity_id === identity.identity_id)
+        .sort((a, b) => normalizeTrackId(a.track_id).localeCompare(normalizeTrackId(b.track_id)));
+      const details = document.createElement("details");
+      const summary = document.createElement("summary");
+      summary.textContent =
+        `${identity.identity_id}${identity.label ? ` — ${identity.label}` : ""} · ` +
+        `${tracks.length} tracks confirmados`;
+      details.append(summary);
+      for (const assignment of tracks) {
+        const button = document.createElement("button");
+        button.type = "button";
+        const observations = state.trackFrames.get(normalizeTrackId(assignment.track_id)) || new Set();
+        button.textContent =
+          `Track T:${assignment.track_id} · ${observations.size} observaciones · ` +
+          `evidencia ${assignment.evidence_frames.join(", ")}`;
+        button.onclick = () => setVideoFrame(assignment.evidence_frames[0] || 1);
+        details.append(button);
+      }
+      host.append(details);
+    }
+    const history = [
+      ...state.identityHistory.map((item) => ({
+        ...item, history_type: "identidad"
+      })),
+      ...state.reviewDecisionHistory.map((item) => ({
+        ...item, history_type: "propuesta"
+      }))
+    ].sort((a, b) =>
+      String(b.decided_at || "").localeCompare(String(a.decided_at || ""))
+    ).slice(0, 30);
+    if (!history.length) {
+      historyHost.textContent = "Todavía no hay decisiones humanas registradas.";
+    } else {
+      for (const item of history) {
+        const line = document.createElement("p");
+        const action = item.history_type === "identidad"
+          ? `${item.action} · track ${item.track_id ?? ""} · ${item.identity_id ?? ""}`
+          : `propuesta ${item.proposal_id} · ${item.previous_decision} → ${item.decision}`;
+        line.textContent =
+          `${item.decided_at || "sin fecha"} · ${action} · ${item.status || "registrado"}`;
+        historyHost.append(line);
+      }
+    }
+    renderReidMetricsSummary();
+    const conflicts = identityConsistencyConflicts();
+    if (conflicts.length) {
+      const warning = document.createElement("p");
+      warning.className = "warning";
+      warning.textContent =
+        `Hay ${conflicts.length} conflicto(s) humano(s) de asignación. ` +
+        "Corrige las decisiones antes de exportar Ground Truth.";
+      host.prepend(warning);
+    }
+  };
+  const identityConsistencyConflicts = () => {
+    const conflicts = [];
+    for (const proposal of allProposals()) {
+      if (!["candidate_same_player", "existing_reid_link"].includes(proposal.relation)) {
+        continue;
+      }
+      const decision = state.reviewDecisions.get(proposal.proposal_id)?.decision;
+      if (!["accepted", "rejected"].includes(decision)) continue;
+      const first = state.trackAssignments.get(
+        normalizeTrackId(proposal.track_ids[0])
+      );
+      const second = state.trackAssignments.get(
+        normalizeTrackId(proposal.track_ids[1])
+      );
+      if (!first || !second) continue;
+      if (first.annotation_source === "independent_human_track_annotation" ||
+          second.annotation_source === "independent_human_track_annotation") {
+        continue;
+      }
+      if (decision === "accepted" && first.identity_id !== second.identity_id) {
+        conflicts.push(
+          `La propuesta ${proposal.proposal_id} se aceptó, pero sus tracks tienen identidades distintas.`
+        );
+      } else if (decision === "rejected" && first.identity_id === second.identity_id) {
+        conflicts.push(
+          `La propuesta ${proposal.proposal_id} se rechazó, pero sus tracks comparten identidad.`
+        );
+      }
+    }
+    const byIdentity = new Map();
+    for (const assignment of state.trackAssignments.values()) {
+      if (isTestOnlyIdentity(assignment.identity_id)) continue;
+      if (!byIdentity.has(assignment.identity_id)) {
+        byIdentity.set(assignment.identity_id, []);
+      }
+      byIdentity.get(assignment.identity_id).push(assignment.track_id);
+    }
+    for (const [identityId, trackIds] of byIdentity) {
+      for (let first = 0; first < trackIds.length; first++) {
+        for (let second = first + 1; second < trackIds.length; second++) {
+          const overlap = overlappingFrames(trackIds[first], trackIds[second]);
+          if (overlap.length) {
+            conflicts.push(
+              `${identityId}: T:${trackIds[first]} y T:${trackIds[second]} coaparecen en f${overlap[0]}.`
+            );
+          }
+        }
+      }
+    }
+    return conflicts;
+  };
+  const renderReidMetricsSummary = () => {
+    const host = $("reidMetricsSummary");
+    const assigned = [...state.trackAssignments.values()];
+    const labels = new Map(assigned.map((item) => [
+      normalizeTrackId(item.track_id), item.identity_id
+    ]));
+    const trackIds = [...labels.keys()].sort();
+    if (trackIds.length < 2) {
+      host.textContent =
+        `Métricas ReID no disponibles: se necesitan al menos 2 tracks confirmados; hay ${trackIds.length}.`;
+      return;
+    }
+    const predictedScores = new Map();
+    for (const proposal of allProposals()) {
+      if (!["candidate_same_player", "existing_reid_link"].includes(proposal.relation)) {
+        continue;
+      }
+      const first = normalizeTrackId(proposal.track_ids[0]);
+      const second = normalizeTrackId(proposal.track_ids[1]);
+      const score = Number(proposal.heuristic_score);
+      if (labels.has(first) && labels.has(second) && Number.isFinite(score)) {
+        const key = [first, second].sort().join("|");
+        predictedScores.set(key, Math.max(predictedScores.get(key) ?? -Infinity, score));
+      }
+    }
+    let tp = 0, fp = 0, fn = 0, tn = 0;
+    for (let first = 0; first < trackIds.length; first++) {
+      for (let second = first + 1; second < trackIds.length; second++) {
+        const key = `${trackIds[first]}|${trackIds[second]}`;
+        const actual = labels.get(trackIds[first]) === labels.get(trackIds[second]);
+        const predicted = predictedScores.has(key);
+        if (actual && predicted) tp++;
+        else if (actual) fn++;
+        else if (predicted) fp++;
+        else tn++;
+      }
+    }
+    if (tp + fn === 0 || fp + tn === 0) {
+      host.textContent =
+        `Métricas ReID no disponibles: faltan pares confirmados positivos (${tp + fn}) ` +
+        `o negativos (${fp + tn}). Hay ${trackIds.length} tracks en ${state.identities.size} identidades.`;
+      return;
+    }
+    const precision = tp + fp ? tp / (tp + fp) : null;
+    const recall = tp + fn ? tp / (tp + fn) : null;
+    const f1 = precision !== null && recall !== null && precision + recall > 0
+      ? 2 * precision * recall / (precision + recall) : null;
+    const fpr = fp + tn ? fp / (fp + tn) : null;
+    const fnr = fn + tp ? fn / (fn + tp) : null;
+    const percent = (value) => value === null
+      ? "no disponible" : `${(value * 100).toFixed(1)}%`;
+    const membersByIdentity = new Map();
+    for (const [trackId, identityId] of labels) {
+      if (!membersByIdentity.has(identityId)) membersByIdentity.set(identityId, []);
+      membersByIdentity.get(identityId).push(trackId);
+    }
+    const queries = [...membersByIdentity.values()]
+      .filter((members) => members.length > 1)
+      .flat();
+    let top1Hits = 0, top5Hits = 0;
+    for (const query of queries) {
+      const ranked = [...predictedScores]
+        .map(([pair, score]) => {
+          const [first, second] = pair.split("|");
+          if (query === first) return {score, candidate: second};
+          if (query === second) return {score, candidate: first};
+          return null;
+        })
+        .filter(Boolean)
+        .sort((a, b) => b.score - a.score || a.candidate.localeCompare(b.candidate));
+      const relevant = new Set(
+        [...labels].filter(([trackId, identityId]) =>
+          trackId !== query && identityId === labels.get(query)
+        ).map(([trackId]) => trackId)
+      );
+      if (ranked[0] && relevant.has(ranked[0].candidate)) top1Hits++;
+      if (ranked.slice(0, 5).some((item) => relevant.has(item.candidate))) top5Hits++;
+    }
+    const top1 = queries.length ? top1Hits / queries.length : null;
+    const top5 = queries.length ? top5Hits / queries.length : null;
+    host.textContent =
+      `Evaluación exploratoria sobre ${trackIds.length} tracks asignados manualmente ` +
+      `y ${tp + fp + fn + tn} pares: Precision ${percent(precision)}, ` +
+      `Recall ${percent(recall)}, F1 ${percent(f1)}, ` +
+      `FPR ${percent(fpr)}, FNR ${percent(fnr)}, Top-1 ${percent(top1)}, ` +
+      `Top-5 ${percent(top5)} (${queries.length} consultas con positivos). ` +
+      "Las propuestas presentes cuentan como predicción positiva; las etiquetas humanas son la referencia. " +
+      "No es una métrica de detección por fotograma ni está validada externamente.";
+  };
+  $("exportReviewDecisions").onclick = async () => {
+    if (!state.videoSha256 || !state.proposalFileSha256) {
+      setMessage("Carga el video original y el apoyo visual antes de exportar decisiones.", true);
+      return;
+    }
+    if (!await persistAnnotations()) return;
+    const activeProposalIds = new Set(allProposals().map((item) => item.proposal_id));
+    const payload = {
+      schema_version: 1,
+      record_type: "human_review_decisions_not_ground_truth",
+      video_sha256: state.videoSha256,
+      proposal_file_sha256: state.proposalFileSha256,
+      created_at: new Date().toISOString(),
+      decisions: [...state.reviewDecisions.values()].filter((item) =>
+        activeProposalIds.has(item.proposal_id)
+      ),
+      history: state.reviewDecisionHistory.filter((item) =>
+        activeProposalIds.has(item.proposal_id)
+      ),
+      note: "Las decisiones aceptan o rechazan hipótesis de asociación; no son identidades ni ground truth."
+    };
+    const blob = new Blob(
+      [JSON.stringify(payload, null, 2) + "\n"],
+      {type: "application/json"}
+    );
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = "reid-review-decisions.json";
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+    setMessage(`Se exportaron ${payload.decisions.length} decisiones y ${payload.history.length} cambios de decisión; no son ground truth.`);
+  };
+  const buildReviewAndGroundTruthExport = () => {
+    if (!state.videoSha256 || !state.proposalFileSha256 || !state.proposalsByCase.size) {
+      throw new Error("Carga y verifica el video, los casos y el apoyo visual antes de exportar.");
+    }
+    const identityConflicts = identityConsistencyConflicts();
+    if (identityConflicts.length) {
+      throw new Error(
+        `Hay conflictos de asignación pendientes: ${identityConflicts.slice(0, 3).join(" ")}`
+      );
+    }
+    const proposals = new Map(allProposals().map((proposal) => [
+      proposal.proposal_id, proposal
+    ]));
+    const byIdentity = new Map();
+    for (const assignment of state.trackAssignments.values()) {
+      if (isTestOnlyIdentity(assignment.identity_id)) continue;
+      if (!state.identities.has(assignment.identity_id)) {
+        throw new Error(`El track T:${assignment.track_id} apunta a un ID de identidad inexistente.`);
+      }
+      const independent = assignment.annotation_source ===
+        "independent_human_track_annotation";
+      if (independent) {
+        const observedFrames = state.trackFrames.get(
+          normalizeTrackId(assignment.track_id)
+        );
+        if (!observedFrames ||
+            !Array.isArray(assignment.evidence_frames) ||
+            !assignment.evidence_frames.length ||
+            assignment.evidence_frames.some((frame) => !observedFrames.has(frame))) {
+          throw new Error(`La asignación directa de T:${assignment.track_id} requiere fotogramas de evidencia observados.`);
+        }
+      } else {
+        const sourceProposal = proposals.get(assignment.proposal_id);
+        if (!sourceProposal ||
+            state.reviewDecisions.get(assignment.proposal_id)?.decision !== "accepted" ||
+            !sourceProposal.track_ids.some((trackId) =>
+              normalizeTrackId(trackId) === normalizeTrackId(assignment.track_id)
+            )) {
+          throw new Error(`Falta la propuesta aceptada que justifica T:${assignment.track_id}; no se exportará como Ground Truth.`);
+        }
+        for (const evidence of assignment.evidence_proposals || []) {
+          const evidenceProposal = proposals.get(evidence.proposal_id);
+          if (!evidenceProposal ||
+              state.reviewDecisions.get(evidence.proposal_id)?.decision !== "accepted" ||
+              !evidenceProposal.track_ids.some((trackId) =>
+                normalizeTrackId(trackId) === normalizeTrackId(assignment.track_id)
+              )) {
+            throw new Error(`La evidencia ${evidence.proposal_id} de T:${assignment.track_id} no tiene una propuesta aceptada cargada.`);
+          }
+        }
+      }
+      if (assignment.status !== "validated_manual" ||
+          assignment.decision !== "human_confirmed_identity_assignment") {
+        throw new Error(`La asignación de T:${assignment.track_id} no está confirmada manualmente.`);
+      }
+      if (!byIdentity.has(assignment.identity_id)) {
+        byIdentity.set(assignment.identity_id, []);
+      }
+      byIdentity.get(assignment.identity_id).push(assignment);
+    }
+    for (const [identityId, assignments] of byIdentity) {
+      for (let first = 0; first < assignments.length; first++) {
+        for (let second = first + 1; second < assignments.length; second++) {
+          const overlap = overlappingFrames(
+            assignments[first].track_id, assignments[second].track_id
+          );
+          if (overlap.length) {
+            throw new Error(
+              `Conflicto temporal: T:${assignments[first].track_id} y ` +
+              `T:${assignments[second].track_id} de ${identityId} coinciden en f${overlap[0]}.`
+            );
+          }
+        }
+      }
+    }
+    const identities = [...byIdentity].map(([identityId, assignments]) => {
+      const identity = state.identities.get(identityId);
+      return {
+        identity_id: identityId,
+        label: identity.label,
+        status: "validated_manual",
+        validation_source: assignments.every((assignment) =>
+          assignment.annotation_source === "independent_human_track_annotation"
+        ) ? "independent_human_track_annotations"
+          : "explicit_human_track_assignment",
+        validated_at: assignments
+          .map((assignment) => assignment.updated_at).sort().at(-1),
+        tracks: assignments
+          .sort((a, b) => normalizeTrackId(a.track_id).localeCompare(
+            normalizeTrackId(b.track_id)
+          ))
+          .map((assignment) => ({
+            track_id: assignment.track_id,
+            proposal_id: assignment.proposal_id,
+            case_id: assignment.case_id,
+            evidence_frames: assignment.evidence_frames,
+            evidence_proposals: assignment.evidence_proposals || [],
+            annotation_source: assignment.annotation_source ||
+              "proposal_supported_human_assignment",
+            decision: assignment.decision,
+            status: assignment.status,
+            proposal_file_sha256: assignment.proposal_file_sha256,
+            assigned_at: assignment.updated_at
+          }))
+      };
+    }).sort((a, b) => a.identity_id.localeCompare(b.identity_id));
+    const decisionCounts = {
+      accepted: 0, rejected: 0, uncertain: 0, pending: 0, not_reviewed: 0
+    };
+    const reviewRecords = allProposals().map((proposal) => {
+      const decision = state.reviewDecisions.get(proposal.proposal_id);
+      const status = decision?.decision || "not_reviewed";
+      decisionCounts[status]++;
+      return {
+        proposal_id: proposal.proposal_id,
+        case_id: proposal.case_id,
+        relation: proposal.relation,
+        track_ids: proposal.track_ids,
+        frames: proposal.frames,
+        heuristic_score: proposal.heuristic_score,
+        heuristic_score_is_probability: false,
+        decision: status === "not_reviewed" ? "pending" : status,
+        decision_source: decision ? "human_review" : "not_reviewed",
+        is_explicitly_pending: status === "pending",
+        notes: decision?.notes || "",
+        decided_at: decision?.updated_at || null,
+        is_ground_truth: false
+      };
+    });
+    return {
+      schema_version: 1,
+      record_type: "human_review_with_manual_ground_truth",
+      video: {
+        sha256: state.videoSha256,
+        frame_count: state.frameCount,
+        width: state.width,
+        height: state.height,
+        fps: state.fps
+      },
+      proposal_file_sha256: state.proposalFileSha256,
+      created_at: new Date().toISOString(),
+      review_summary: {
+        ...decisionCounts,
+        manually_validated_identities: identities.length,
+        manually_validated_tracks: identities.reduce(
+          (total, identity) => total + identity.tracks.length, 0
+        )
+      },
+      identity_registry: [...state.identities.values()].filter((identity) =>
+        !isTestOnlyIdentity(identity.identity_id)
+      ),
+      identities,
+      review_records: reviewRecords,
+      review_decision_history: state.reviewDecisionHistory,
+      identity_history: state.identityHistory,
+      action_history: state.actionHistory,
+      limitations: [
+        "Solo las asignaciones explícitas y validadas por una persona aparecen en identities.",
+        "Las identidades TEST-ONLY están excluidas del Ground Truth exportado.",
+        "Las asignaciones directas de tracks se anotan sin usar las propuestas como referencia.",
+        "Aceptar una propuesta o pertenecer a un grupo candidato no constituye Ground Truth.",
+        "Los scores heurísticos no son probabilidades ni intervienen en la confirmación automática de identidades.",
+        "Los estados rejected, uncertain y pending se exportan como revisión, nunca como identidades confirmadas."
+      ]
+    };
+  };
+  const downloadBlob = (blob, filename) => {
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = filename;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+  };
+  $("exportGroundTruthJson").onclick = async () => {
+    try {
+      const payload = buildReviewAndGroundTruthExport();
+      if (!await persistAnnotations()) return;
+      downloadBlob(
+        new Blob([JSON.stringify(payload, null, 2) + "\n"], {
+          type: "application/json"
+        }),
+        "reid-human-review-and-ground-truth.json"
+      );
+      setMessage(
+        `Exportación lista: ${payload.review_summary.manually_validated_identities} identidades y ` +
+        `${payload.review_summary.manually_validated_tracks} tracks confirmados manualmente. ` +
+        "Las propuestas sin asignación explícita no son Ground Truth."
+      );
+    } catch (error) {
+      setMessage(`No se pudo exportar Ground Truth: ${error.message}`, true);
+    }
+  };
+  $("exportGroundTruthCsv").onclick = async () => {
+    try {
+      const payload = buildReviewAndGroundTruthExport();
+      if (!await persistAnnotations()) return;
+      const rows = [[
+        "tipo_registro", "id_identidad", "id_track", "alias", "id_propuesta",
+        "id_caso", "relacion", "tracks_propuestos", "fotogramas_evidencia",
+        "decision_humana", "estado_ground_truth", "score_heuristico",
+        "score_es_probabilidad", "fecha_revision", "sha256_propuestas"
+      ]];
+      for (const review of payload.review_records) {
+        const trackIdentityIds = review.track_ids.map((trackId) =>
+          state.trackAssignments.get(normalizeTrackId(trackId))?.identity_id || ""
+        );
+        rows.push([
+          "decision_propuesta", "", "", "", review.proposal_id,
+          review.case_id, review.relation, review.track_ids.join("|"),
+          review.frames.join("|"), review.decision,
+          review.decision === "accepted" &&
+            trackIdentityIds[0] && trackIdentityIds[0] === trackIdentityIds[1]
+            ? "validated_manual" : "not_ground_truth",
+          review.heuristic_score ?? "", "false",
+          state.reviewDecisions.get(review.proposal_id)?.updated_at || "",
+          state.proposalFileSha256
+        ]);
+      }
+      for (const identity of payload.identities) {
+        const localIdentity = state.identities.get(identity.identity_id);
+        for (const track of identity.tracks) {
+          rows.push([
+            "asignacion_validada", identity.identity_id, track.track_id,
+            localIdentity.label, track.proposal_id, track.case_id,
+            "asignacion_humana_confirmada", identity.tracks
+              .map((item) => item.track_id).join("|"),
+            track.evidence_frames.join("|"), "accepted",
+            "validated_manual", "", "false", track.assigned_at,
+            track.proposal_file_sha256
+          ]);
+        }
+      }
+      const csv = rows.map((row) => row.map((value) => {
+        const text = String(value ?? "");
+        return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+      }).join(",")).join("\r\n") + "\r\n";
+      downloadBlob(new Blob(["\ufeff", csv], {type: "text/csv;charset=utf-8"}), "reid-human-review-and-ground-truth.csv");
+      setMessage(
+        `CSV exportado con ${payload.review_records.length} estados de propuesta y ` +
+        `${payload.review_summary.manually_validated_tracks} asignaciones manualmente validadas.`
+      );
+    } catch (error) {
+      setMessage(`No se pudo exportar el CSV: ${error.message}`, true);
+    }
+  };
+  $("createIdentity").onclick = async () => {
+    if (!state.videoSha256 || !state.reviewReady || !state.frameCount) {
+      setMessage("Verifica primero el video original y la copia de revisión antes de crear identidades.", true);
+      return;
+    }
+    const identityId = $("newIdentityId").value.trim();
+    const label = $("newIdentityLabel").value.trim();
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(identityId)) {
+      setMessage("Usa un ID único de 1–80 caracteres: letras, números, punto, guion o guion bajo.", true);
+      return;
+    }
+    if ([...state.identities.keys()].some((existingId) =>
+      existingId.toLocaleLowerCase() === identityId.toLocaleLowerCase()
+    )) {
+      setMessage(`El ID ${identityId} ya existe; elige o selecciona esa identidad.`, true);
+      return;
+    }
+    if (label && [...state.identities.values()].some((identity) =>
+      identity.label && identity.label.toLocaleLowerCase() === label.toLocaleLowerCase()
+    )) {
+      setMessage("Ese alias ya está asociado a otra etiqueta; reutiliza la identidad existente para no duplicar al jugador.", true);
+      return;
+    }
+    const timestamp = new Date().toISOString();
+    state.identities.set(identityId, {
+      identity_id: identityId,
+      label,
+      created_at: timestamp,
+      creation_source: "explicit_human_action"
+    });
+    state.identityHistory.push({
+      action: "identity_created",
+      identity_id: identityId,
+      label,
+      status: "local_label_only",
+      decided_at: timestamp
+    });
+    state.actionHistory.push({
+      action_id: actionId(),
+      action_type: "identity_created",
+      identity_id: identityId,
+      at: timestamp
+    });
+    $("newIdentityId").value = "";
+    $("newIdentityLabel").value = "";
+    renderHumanState();
+    if (await persistAnnotations()) {
+      setMessage(
+        `Se creó la etiqueta ${identityId}. Aún no representa una identidad confirmada ni Ground Truth.`
+      );
+    }
+  };
+  $("undoHumanAction").onclick = () => undoLastHumanAction();
+  $("manualTrackSelect").onchange = () => {
+    const observed = state.trackFrames.get($("manualTrackSelect").value);
+    const currentFrame = frameKey();
+    const preferred = observed?.has(currentFrame)
+      ? currentFrame
+      : [...(observed || [])].sort((a, b) => a - b)[0];
+    renderManualEvidenceFrames(preferred ?? null);
+    if (Number($("manualEvidenceFrame").value)) {
+      setVideoFrame(Number($("manualEvidenceFrame").value));
+    }
+  };
+  $("manualEvidenceFrame").onchange = () => {
+    const frame = Number($("manualEvidenceFrame").value);
+    if (Number.isInteger(frame) && frame > 0) setVideoFrame(frame);
+  };
+  $("assignManualTrack").onclick = () => {
+    const trackId = normalizeTrackId($("manualTrackSelect").value);
+    const identityId = $("manualIdentitySelect").value;
+    const evidenceFrame = Number($("manualEvidenceFrame").value);
+    if (!state.videoSha256 || !state.reviewReady) {
+      setMessage("Verifica primero el video original y la copia de revisión.", true);
+      return;
+    }
+    if (!trackId || !identityId || !Number.isInteger(evidenceFrame) ||
+        evidenceFrame < 1) {
+      setMessage("Selecciona un track, un fotograma observado y una identidad humana.", true);
+      return;
+    }
+    if (frameKey() !== evidenceFrame || video.seeking) {
+      setMessage("Espera a que se muestre el fotograma de evidencia antes de confirmar.", true);
+      return;
+    }
+    assignManualTrackToIdentity(trackId, identityId, evidenceFrame);
+  };
+  $("importHumanReview").onchange = async (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+    const previousState = {
+      identities: state.identities,
+      trackAssignments: state.trackAssignments,
+      reviewDecisions: state.reviewDecisions,
+      reviewDecisionHistory: state.reviewDecisionHistory,
+      identityHistory: state.identityHistory,
+      actionHistory: state.actionHistory
+    };
+    try {
+      if (!state.videoSha256 || !state.proposalFileSha256 ||
+          !state.proposalsByCase.size) {
+        throw new Error("Carga primero el video, los casos y el apoyo visual de propuestas.");
+      }
+      if (state.identities.size || state.trackAssignments.size ||
+          state.reviewDecisions.size || state.reviewDecisionHistory.length ||
+          state.identityHistory.length || state.actionHistory.length) {
+        throw new Error("La sesión local ya contiene decisiones. Exporta una copia antes de cambiar de sesión; la importación solo se permite sobre una revisión vacía.");
+      }
+      const payload = JSON.parse(await file.text());
+      if (payload.record_type !== "human_review_with_manual_ground_truth" ||
+          payload.video?.sha256 !== state.videoSha256 ||
+          payload.proposal_file_sha256 !== state.proposalFileSha256 ||
+          !Array.isArray(payload.identity_registry) ||
+          !Array.isArray(payload.identities) ||
+          !Array.isArray(payload.review_records) ||
+          !Array.isArray(payload.review_decision_history) ||
+          !Array.isArray(payload.identity_history) ||
+          !Array.isArray(payload.action_history)) {
+        throw new Error("La copia no coincide con este video/propuestas o no tiene el esquema de revisión esperado.");
+      }
+      const importedIdentities = new Map();
+      for (const identity of payload.identity_registry) {
+        if (!identity || typeof identity.identity_id !== "string" ||
+            !/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(identity.identity_id) ||
+            isTestOnlyIdentity(identity.identity_id) ||
+            identity.creation_source !== "explicit_human_action" ||
+            importedIdentities.has(identity.identity_id.toLocaleLowerCase())) {
+          throw new Error("La copia contiene un ID duplicado, TEST-ONLY o sin procedencia humana.");
+        }
+        importedIdentities.set(identity.identity_id.toLocaleLowerCase(), identity);
+      }
+      const importedDecisions = new Map();
+      const proposalById = new Map(allProposals().map((proposal) => [
+        proposal.proposal_id, proposal
+      ]));
+      if (payload.review_records.length !== proposalById.size) {
+        throw new Error("La copia no contiene el estado de todas las propuestas cargadas.");
+      }
+      for (const record of payload.review_records) {
+        const proposal = proposalById.get(record?.proposal_id);
+        if (!proposal || importedDecisions.has(record.proposal_id) ||
+            !["accepted", "rejected", "uncertain", "pending"].includes(record.decision)) {
+          throw new Error("La copia contiene una decisión duplicada o una propuesta desconocida.");
+        }
+        if (record.decision_source === "human_review") {
+          if (JSON.stringify(record.track_ids) !== JSON.stringify(proposal.track_ids) ||
+              JSON.stringify(record.frames) !== JSON.stringify(proposal.frames)) {
+            throw new Error(`La decisión de ${record.proposal_id} no coincide con sus referencias originales.`);
+          }
+          importedDecisions.set(record.proposal_id, {
+            proposal_id: record.proposal_id,
+            case_id: record.case_id,
+            track_ids: record.track_ids,
+            frames: record.frames,
+            decision: record.decision,
+            notes: record.notes || "",
+            proposal_file_sha256: state.proposalFileSha256,
+            updated_at: record.decided_at || payload.created_at
+          });
+        } else if (record.decision_source !== "not_reviewed") {
+          throw new Error(`La procedencia de la decisión ${record.proposal_id} no es válida.`);
+        }
+      }
+      const importedAssignments = new Map();
+      for (const identity of payload.identities) {
+        if (!identity || identity.status !== "validated_manual" ||
+            ![
+              "explicit_human_track_assignment",
+              "independent_human_track_annotations"
+            ].includes(identity.validation_source) ||
+            isTestOnlyIdentity(identity.identity_id) ||
+            !importedIdentities.has(identity.identity_id.toLocaleLowerCase())) {
+          throw new Error("La copia contiene Ground Truth sin identidad humana registrada.");
+        }
+        for (const track of identity.tracks || []) {
+          const trackId = normalizeTrackId(track.track_id);
+          if (!state.trackFrames.has(trackId) || importedAssignments.has(trackId)) {
+            throw new Error(`T:${trackId} no existe en el CSV o está asignado más de una vez.`);
+          }
+          const independent = track.annotation_source ===
+            "independent_human_track_annotation";
+          if (identity.validation_source ===
+                "independent_human_track_annotations" && !independent ||
+              !independent &&
+                track.annotation_source !== "proposal_supported_human_assignment" &&
+                track.annotation_source !== undefined) {
+            throw new Error(`La procedencia de T:${trackId} no coincide con su identidad.`);
+          }
+          importedAssignments.set(trackId, {
+            ...track,
+            track_id: trackId,
+            identity_id: identity.identity_id,
+            updated_at: track.assigned_at,
+            proposal_file_sha256: state.proposalFileSha256
+          });
+        }
+      }
+      state.identities = new Map(
+        [...importedIdentities.values()].map((identity) => [
+          identity.identity_id, identity
+        ])
+      );
+      state.reviewDecisions = importedDecisions;
+      state.trackAssignments = importedAssignments;
+      state.reviewDecisionHistory = payload.review_decision_history;
+      state.identityHistory = payload.identity_history;
+      state.actionHistory = payload.action_history;
+      const invalidConflict = identityConsistencyConflicts();
+      if (invalidConflict.length) {
+        throw new Error(`La copia contiene conflictos: ${invalidConflict[0]}`);
+      }
+      buildReviewAndGroundTruthExport();
+      renderHumanState();
+      if (await persistAnnotations()) {
+        setMessage("Se recuperó la revisión humana y su Ground Truth en este navegador; no se modificaron las anotaciones por fotograma.");
+      }
+    } catch (error) {
+      state.identities = previousState.identities;
+      state.trackAssignments = previousState.trackAssignments;
+      state.reviewDecisions = previousState.reviewDecisions;
+      state.reviewDecisionHistory = previousState.reviewDecisionHistory;
+      state.identityHistory = previousState.identityHistory;
+      state.actionHistory = previousState.actionHistory;
+      renderHumanState();
+      setMessage(`No se pudo recuperar la copia de revisión: ${error.message}`, true);
+    } finally {
+      event.target.value = "";
+    }
+  };
+  const updateFrameStatus = () => {
+    const frame = frameKey();
+    const record = state.frames.get(frame);
+    const exhaustiveCount = [...state.frames.values()].filter((item) => item.exhaustive).length;
+    $("frameStatus").textContent =
+      `Fotograma ${frame}${state.frameCount ? ` de ${state.frameCount}` : ""} · ` +
+      `${record?.observations.length || 0} anotaciones · ` +
+      `${record?.events?.length || 0} eventos humanos · ` +
+      `revisión ${record ? (record.exhaustive ? "exhaustiva" : "no exhaustiva") : "pendiente"} · ` +
+      `${state.frames.size} fotogramas revisados (${exhaustiveCount} exhaustivos)` +
+      `${state.frozen ? " · CONJUNTO CONGELADO" : ""}.`;
+  };
+  const render = () => {
+    if (!state.width || !state.height) return;
+    if (canvas.width !== state.width || canvas.height !== state.height) {
+      canvas.width = state.width; canvas.height = state.height;
+    }
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const frame = frameKey();
+    const predictions = state.detections.get(frame) || [];
+    for (let i = 0; i < predictions.length; i++) {
+      const d = predictions[i], selected = state.selectedDetection === d;
+      const humanAssignment = state.trackAssignments.get(
+        normalizeTrackId(d.temporal)
+      );
+      ctx.strokeStyle = selected ? "#ffff00" : "#00e0ff";
+      ctx.lineWidth = Math.max(2, state.width / 1200);
+      ctx.strokeRect(d.x1, d.y1, d.x2-d.x1, d.y2-d.y1);
+      ctx.fillStyle = selected ? "#ffff00" : "#00e0ff";
+      ctx.font = `${Math.max(18, state.width / 90)}px sans-serif`;
+      ctx.fillText(
+        `${d.label} T:${d.temporal}${d.persistent ? ` P:${d.persistent}` : ""}` +
+        `${humanAssignment ? ` H:${humanAssignment.identity_id}` : ""}`,
+        d.x1, Math.max(20,d.y1-4)
+      );
+    }
+    const record = state.frames.get(frame);
+    for (const observation of record?.observations || []) {
+      ctx.strokeStyle = observation.unknown || observation.ambiguous ? "#ff9d00" : "#28d17c";
+      ctx.lineWidth = Math.max(3, state.width / 900);
+      ctx.strokeRect(observation.x1, observation.y1, observation.x2-observation.x1, observation.y2-observation.y1);
+      ctx.fillStyle = ctx.strokeStyle;
+      ctx.font = `${Math.max(18, state.width / 90)}px sans-serif`;
+      const id = observation.unknown ? "DESCONOCIDA" : observation.ambiguous ? "AMBIGUA" :
+        observation.ignore ? "IGNORADA" : observation.identity_id;
+      ctx.fillText(`REAL:${id}`, observation.x1, Math.max(20, observation.y1-5));
+    }
+    if (state.drawing) {
+      ctx.strokeStyle = "#ff00ff"; ctx.lineWidth = Math.max(2, state.width / 1200);
+      ctx.strokeRect(state.drawing.x1, state.drawing.y1,
+        state.drawing.x2-state.drawing.x1, state.drawing.y2-state.drawing.y1);
+    }
+  };
+  const renderList = () => {
+    const host = $("observations"); host.replaceChildren();
+    const identities = new Set();
+    for (const record of state.frames.values()) {
+      for (const observation of record.observations) {
+        if (observation.identity_id) identities.add(observation.identity_id);
+      }
+      for (const trajectoryEvent of record.events || []) {
+        if (trajectoryEvent.identity_id) identities.add(trajectoryEvent.identity_id);
+      }
+    }
+    const suggestions = $("identitySuggestions");
+    suggestions.replaceChildren();
+    for (const identity of [...identities].sort()) {
+      const option = document.createElement("option");
+      option.value = identity;
+      suggestions.append(option);
+    }
+    const frame = state.frames.get(frameKey());
+    for (const observation of frame?.observations || []) {
+      const button = document.createElement("button");
+      const identity = observation.unknown ? "DESCONOCIDA" : observation.ambiguous ? "AMBIGUA" :
+        observation.ignore ? "IGNORADA" : observation.identity_id;
+      const source = observation.source_kind === "manual" ? "recuadro manual" : "recuadro sugerido";
+      const entityLabels = {
+        player: "jugador", goalkeeper: "portero", referee: "árbitro",
+        ball: "balón", other: "otro"
+      };
+      button.textContent =
+        `${entityLabels[observation.entity_type || "player"]} · ${identity} | ` +
+        `${source} | ${observation.annotation_id}`;
+      button.disabled = state.frozen;
+      button.onclick = () => {
+        state.selectedAnnotation = observation;
+        state.selectedDetection = null;
+        $("entityType").value = observation.entity_type || "player";
+        $("identity").value = observation.identity_id || "";
+        $("unknown").checked = Boolean(observation.unknown);
+        $("ambiguous").checked = Boolean(observation.ambiguous);
+        $("ignore").checked = Boolean(observation.ignore);
+        $("notes").value = observation.notes || "";
+        $("selectedInfo").textContent = `Editando anotación ${observation.annotation_id}.`;
+        render();
+      };
+      host.append(button);
+    }
+    const eventLabels = {
+      appearance: "Aparición",
+      disappearance: "Desaparición",
+      occlusion_start: "Inicio de oclusión",
+      occlusion_end: "Fin de oclusión",
+      crossing: "Cruce entre jugadores",
+      camera_change: "Cambio de cámara/escena"
+    };
+    const eventHost = $("trajectoryEvents");
+    eventHost.replaceChildren();
+    for (const trajectoryEvent of frame?.events || []) {
+      const line = document.createElement("div");
+      const description = document.createElement("span");
+      description.textContent =
+        `${eventLabels[trajectoryEvent.event_type]} · ${trajectoryEvent.identity_id}` +
+        `${trajectoryEvent.notes ? ` · ${trajectoryEvent.notes}` : ""}`;
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.textContent = "Eliminar evento";
+      remove.disabled = state.frozen;
+      remove.onclick = () => {
+        if (refuseFrozenEdit()) return;
+        const record = recordFor(frameKey());
+        record.events = (record.events || []).filter(
+          (item) => item.event_id !== trajectoryEvent.event_id
+        );
+        renderList();
+        render();
+        persistAnnotations();
+      };
+      line.append(description, remove);
+      eventHost.append(line);
+    }
+    updateFrameStatus();
+  };
+  const setVideoFrame = (frame) => {
+    $("frameNumber").value = String(
+      state.frameCount > 0 ? Math.max(1,Math.min(state.frameCount,frame)) : Math.max(1,frame)
+    );
+    syncFrame();
+  };
+  $("videoFile").onchange = async (event) => {
+    state.file = event.target.files[0]; if (!state.file) return;
+    state.sourcePath = state.file.webkitRelativePath || state.file.name;
+    state.frozen = false;
+    state.freezeMetadata = null;
+    state.recordType = null;
+    state.annotationPolicy = null;
+    state.fps = 0;
+    state.width = 0;
+    state.height = 0;
+    state.frameCount = 0;
+    $("sourceFps").value = "";
+    $("sourceFrameCount").value = "";
+    $("sourceWidth").value = "";
+    $("sourceHeight").value = "";
+    setAnnotationFrozen(false);
+    state.frames.clear();
+    state.reviewDecisions.clear();
+    state.reviewDecisionHistory = [];
+    state.actionHistory = [];
+    state.identities.clear();
+    state.trackAssignments.clear();
+    state.identityHistory = [];
+    state.trackFrames.clear();
+    state.proposalsByCase.clear();
+    state.proposalGroups.clear();
+    state.proposalFileSha256 = null;
+    state.fragments = [];
+    state.caseIndex = -1;
+    $("proposalFile").value = "";
+    $("fragmentFile").value = "";
+    state.videoSha256 = null;
+    state.reviewReady = false;
+    state.metadataRestored = false;
+    state.reviewManifest = null;
+    state.reviewFile = null;
+    state.reviewFileSha256 = null;
+    $("reviewVideoFile").value = "";
+    $("reviewManifestFile").value = "";
+    setReviewVideo(state.file);
+    try {
+      state.videoSha256 = await hashFile(state.file);
+      const saved = await loadSavedAnnotations(state.videoSha256);
+      if (saved) {
+        if (saved.annotations_frozen) {
+          const frozenPayload = {
+            schema_version: 1,
+            record_type: saved.ground_truth_record_type ||
+              "human_identity_ground_truth",
+            annotation_policy: saved.annotation_policy || "",
+            video: saved.video,
+            exhaustive_frames: saved.exhaustive_frames,
+            frames: saved.frames,
+            dataset: {freeze: saved.ground_truth_freeze}
+          };
+          validateAnnotationExport(frozenPayload);
+          await verifyFrozenGroundTruth(frozenPayload);
+        }
+        state.frames = new Map(saved.frames.map((record) => [record.frame, record]));
+        state.reviewDecisions = new Map(
+          (saved.review_decisions || []).map((decision) => [
+            decision.proposal_id, decision
+          ])
+        );
+        state.reviewDecisionHistory = saved.review_decision_history || [];
+        state.actionHistory = saved.human_action_history || [];
+        state.identities = new Map(
+          (saved.human_identities || []).map((identity) => [
+            identity.identity_id, identity
+          ])
+        );
+        state.trackAssignments = new Map(
+          (saved.track_identity_assignments || []).map((assignment) => [
+            normalizeTrackId(assignment.track_id), assignment
+          ])
+        );
+        state.identityHistory = saved.identity_history || [];
+        state.proposalFileSha256 = saved.proposal_file_sha256 || null;
+        state.samplingPlan = saved.sampling_plan || null;
+        state.samplingPlanSha256 = saved.sampling_plan_sha256 || null;
+        state.frozen = saved.annotations_frozen === true;
+        state.freezeMetadata = saved.ground_truth_freeze || null;
+        state.recordType = saved.ground_truth_record_type ?? null;
+        state.annotationPolicy = saved.annotation_policy ?? null;
+        state.fps = saved.video.fps;
+        state.frameCount = saved.video.frame_count;
+        state.width = saved.video.width;
+        state.height = saved.video.height;
+        state.sourcePath = saved.video.path || state.sourcePath;
+        state.metadataRestored = true;
+        setAnnotationFrozen(state.frozen);
+        populateFrameMapping({width: state.width, height: state.height});
+        setMessage(
+          `Se recuperaron ${state.frames.size} fotogramas y ${state.reviewDecisions.size} decisiones guardadas para este video.`
+        );
+        syncFrame();
+      } else {
+        state.metadataRestored = false;
+        setMessage("Video original cargado. Indica FPS y fotogramas procesados para iniciar una anotación independiente.");
+      }
+    } catch (error) {
+      setMessage(`No se pudo calcular el hash o recuperar las anotaciones: ${error.message}`, true);
+    }
+  };
+  $("reviewVideoFile").onchange = (event) => {
+    state.reviewFile = event.target.files[0] || null;
+    state.reviewReady = false;
+    state.reviewManifest = null;
+    state.reviewFileSha256 = null;
+    if (state.reviewFile) {
+      setReviewVideo(state.reviewFile);
+      hashFile(state.reviewFile).then((hash) => {
+        state.reviewFileSha256 = hash;
+        if (state.reviewManifest) confirmFrameMapping().catch((error) =>
+          setMessage(error.message, true)
+        );
+      }).catch((error) => setMessage(`No se pudo calcular el hash de la copia de revisión: ${error.message}`, true));
+      setMessage("Copia compatible cargada. Carga su manifiesto o verifica manualmente la correspondencia.");
+    } else if (state.file) {
+      setReviewVideo(state.file);
+      setMessage("Se usará el video original para anotar sin depender de detecciones ni propuestas.");
+    }
+  };
+  video.onloadedmetadata = () => {
+    populateFrameMapping({width: video.videoWidth, height: video.videoHeight});
+    if (state.metadataRestored) {
+      confirmFrameMapping().catch((error) => setMessage(error.message, true));
+      return;
+    }
+    setMessage(
+      state.reviewFile
+        ? "La copia se puede reproducir. Indica los metadatos exactos del original o carga el manifiesto y verifica la correspondencia."
+        : "El video original se puede reproducir. Indica FPS y fotogramas procesados para verificar el índice temporal."
+    );
+  };
+  video.onerror = () => {
+    setMessage(
+      "Este navegador no puede reproducir el video seleccionado. Carga el original como video fuente y luego elige una copia MP4/WebM compatible, alineada fotograma a fotograma.",
+      true
+    );
+  };
+  $("reviewManifestFile").onchange = async (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+    try {
+      const manifest = JSON.parse(await file.text());
+      if (manifest.schema_version !== 1 || manifest.output_codec !== "h264" ||
+          manifest.pts_monotonic !== true ||
+          manifest.frames_written !== manifest.frames_decoded_for_verification) {
+        throw new Error("El manifiesto de revisión no es compatible o no está verificado.");
+      }
+      if (!state.videoSha256 || manifest.source_sha256 !== state.videoSha256) {
+        throw new Error("El SHA-256 del manifiesto no coincide con el video original seleccionado.");
+      }
+      state.reviewManifest = manifest;
+      $("sourceFps").value = String(manifest.source_fps);
+      $("sourceFrameCount").value = String(manifest.frames_written);
+      $("sourceWidth").value = String(manifest.source_width);
+      $("sourceHeight").value = String(manifest.source_height);
+      if (state.reviewFile) {
+        state.reviewFileSha256 = await hashFile(state.reviewFile);
+        await confirmFrameMapping();
+      } else {
+        setMessage("Manifiesto del original verificado; selecciona la copia de revisión correspondiente.");
+      }
+    } catch (error) {
+      setMessage(`Se rechazó el manifiesto de revisión: ${error.message}`, true);
+    }
+  };
+  $("confirmFrameMapping").onclick = () => {
+    confirmFrameMapping().catch((error) => setMessage(error.message, true));
+  };
+  $("predictionFile").onchange = async (event) => {
+    const file = event.target.files[0]; if (!file) return;
+    try {
+      const rows = parseCsv(await file.text());
+      state.detections.clear();
+      state.trackFrames.clear();
+      for (const row of rows) {
+        if (row.frame > state.frameCount && state.frameCount) continue;
+        if (!state.detections.has(row.frame)) state.detections.set(row.frame, []);
+        state.detections.get(row.frame).push(row);
+        if (row.temporal !== "" && row.temporal !== undefined) {
+          const trackId = normalizeTrackId(row.temporal);
+          if (!state.trackFrames.has(trackId)) {
+            state.trackFrames.set(trackId, new Set());
+          }
+          state.trackFrames.get(trackId).add(row.frame);
+        }
+      }
+      setMessage(`Se cargaron ${rows.length} recuadros sugeridos. La identidad real de cada persona debe asignarse manualmente.`);
+      render();
+      renderIdentityManager();
+    } catch (error) { setMessage(error.message, true); }
+  };
+  $("fragmentFile").onchange = async (event) => {
+    const file = event.target.files[0]; if (!file) return;
+    try {
+      const data = JSON.parse(await file.text());
+      validateReviewCases(data);
+      state.fragments = data.cases || [];
+      state.caseIndex = state.fragments.length ? 0 : -1;
+      if (state.caseIndex >= 0) setVideoFrame(state.fragments[0].start_frame);
+      else syncFrame();
+      setMessage(`Se cargaron ${state.fragments.length} casos de revisión priorizados.`);
+    } catch (error) { setMessage(error.message, true); }
+  };
+  $("proposalFile").onchange = async (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+    try {
+      const data = JSON.parse(await file.text());
+      if (data.schema_version !== 2 ||
+          data.proposal_type !== "automatic_visual_review_assistance" ||
+          data.video?.source_sha256 !== state.videoSha256 ||
+          data.video?.review_sha256 !== state.reviewFileSha256 ||
+          !state.fragments.length ||
+          !Array.isArray(data.cases) ||
+          !Array.isArray(data.candidate_groups)) {
+        throw new Error("El archivo de apoyo no coincide con los videos cargados o su esquema no es compatible.");
+      }
+      const proposals = new Map();
+      const groups = new Map(data.candidate_groups.map((group) => [
+        group.candidate_group_id, group
+      ]));
+      const duplicateGroups = new Map(
+        (data.duplicate_proposal_groups || []).map((group) => [
+          group.duplicate_group_id, group
+        ])
+      );
+      if (!Array.isArray(data.duplicate_proposal_groups) ||
+          duplicateGroups.size !== data.duplicate_proposal_groups.length) {
+        throw new Error("El archivo de apoyo contiene grupos duplicados no válidos.");
+      }
+      const loadedCaseIds = new Set(state.fragments.map((item) => item.fragment_id));
+      const proposalIds = new Set();
+      const relationTypesByDuplicate = new Map();
+      for (const item of data.cases) {
+        if (typeof item.fragment_id !== "string" ||
+            !loadedCaseIds.has(item.fragment_id) ||
+            !Array.isArray(item.frame_evidence) ||
+            !Array.isArray(item.candidate_associations)) {
+          throw new Error("El archivo de apoyo contiene un caso no válido.");
+        }
+        for (const proposal of item.candidate_associations) {
+          if (typeof proposal.proposal_id !== "string" ||
+              proposalIds.has(proposal.proposal_id) ||
+              !Array.isArray(proposal.track_ids) || proposal.track_ids.length !== 2 ||
+              !Array.isArray(proposal.frames) || proposal.frames.length !== 2 ||
+              !proposal.frames.every((frame) =>
+                Number.isInteger(frame) && frame >= 1 && frame <= state.frameCount
+              ) ||
+              (proposal.candidate_group_id &&
+               !groups.has(proposal.candidate_group_id)) ||
+              (proposal.duplicate_group_id &&
+               !duplicateGroups.has(proposal.duplicate_group_id))) {
+            throw new Error("El archivo de apoyo contiene una propuesta duplicada o con referencias inválidas.");
+          }
+          proposalIds.add(proposal.proposal_id);
+          if (proposal.duplicate_group_id) {
+            if (!relationTypesByDuplicate.has(proposal.duplicate_group_id)) {
+              relationTypesByDuplicate.set(proposal.duplicate_group_id, new Set());
+            }
+            relationTypesByDuplicate.get(proposal.duplicate_group_id).add(
+              proposal.relation
+            );
+          }
+        }
+        proposals.set(item.fragment_id, item);
+      }
+      if (proposals.size !== loadedCaseIds.size ||
+          [...loadedCaseIds].some((caseId) => !proposals.has(caseId))) {
+        throw new Error("El archivo de apoyo no contiene exactamente los casos cargados.");
+      }
+      const proposalHash = await hashFile(file);
+      if (state.proposalFileSha256 &&
+          state.proposalFileSha256 !== proposalHash &&
+          (state.reviewDecisions.size || state.trackAssignments.size)) {
+        throw new Error(
+          "El apoyo visual no coincide con la sesión humana guardada. Carga la versión original de propuestas para evitar reasociar decisiones a otros datos."
+        );
+      }
+      state.proposalsByCase = proposals;
+      state.proposalGroups = groups;
+      state.duplicateRelationTypes = new Map(
+        [...relationTypesByDuplicate].map(([id, relations]) => [
+          id, [...relations].sort()
+        ])
+      );
+      state.proposalFileSha256 = proposalHash;
+      renderReviewAssistance();
+      renderIdentityManager();
+      setMessage(`Se cargó apoyo visual para ${proposals.size} casos; no se modificaron anotaciones.`);
+    } catch (error) { setMessage(error.message, true); }
+  };
+  $("annotationFile").onchange = async (event) => {
+    const file = event.target.files[0]; if (!file) return;
+    try {
+      if (state.frozen) throw new Error("No se puede reemplazar un conjunto congelado.");
+      const data = JSON.parse(await file.text());
+      if (!state.videoSha256) throw new Error("Carga el video original antes de importar anotaciones.");
+      if (data.schema_version !== 1 || data.video?.sha256 !== state.videoSha256) {
+        throw new Error("El esquema del JSON o el SHA-256 del video no coincide con el original cargado.");
+      }
+      validateAnnotationExport(data);
+      const importedFrozen = await verifyFrozenGroundTruth(data);
+      if (video.readyState >= 1) {
+        const durationFrames = video.duration * data.video.fps;
+        const dimensionsMismatch = state.reviewFile
+          ? Math.abs(
+            data.video.width / data.video.height -
+            video.videoWidth / video.videoHeight
+          ) > 0.001
+          : data.video.width !== video.videoWidth ||
+            data.video.height !== video.videoHeight;
+        if (Math.abs(durationFrames - data.video.frame_count) > 1.5 ||
+            dimensionsMismatch) {
+          throw new Error("Los metadatos de la anotación no coinciden con el video visible.");
+        }
+      }
+      state.frames = new Map(data.frames.map((record) => [record.frame, record]));
+      state.fps = data.video.fps;
+      state.frameCount = data.video.frame_count;
+      state.width = data.video.width;
+      state.height = data.video.height;
+      state.metadataRestored = true;
+      state.reviewReady = video.readyState >= 1;
+      state.frozen = importedFrozen;
+      state.freezeMetadata = data.dataset?.freeze || null;
+      state.recordType = data.record_type ?? null;
+      state.annotationPolicy = data.annotation_policy ?? null;
+      state.samplingPlan = data.sampling_plan || null;
+      $("frameNumber").max = String(state.frameCount);
+      populateFrameMapping({width: state.width, height: state.height});
+      setAnnotationFrozen(state.frozen);
+      if (!await persistAnnotations()) return;
+      setMessage(importedFrozen
+        ? `Se importó el Ground Truth congelado (${data.dataset.freeze.content_sha256.slice(0, 12)}); quedó en modo de solo lectura.`
+        : `Se importaron y guardaron ${state.frames.size} fotogramas de anotaciones humanas.`
+      );
+      syncFrame();
+    } catch (error) { setMessage(error.message, true); }
+  };
+  $("frameNumber").onchange = syncFrame;
+  for (const id of ["unknown", "ambiguous", "ignore"]) {
+    $(id).onchange = () => {
+      if (!$(id).checked) return;
+      for (const otherId of ["unknown", "ambiguous", "ignore"]) {
+        if (otherId !== id) $(otherId).checked = false;
+      }
+      $("identity").value = "";
+    };
+  }
+  $("identity").oninput = () => {
+    if (!$("identity").value.trim()) return;
+    $("unknown").checked = false;
+    $("ambiguous").checked = false;
+    $("ignore").checked = false;
+  };
+  video.addEventListener("seeked", () => {
+    if (state.fps > 0) {
+      const displayedFrame = Math.min(
+        state.frameCount,
+        Math.max(1, Math.round(video.currentTime * state.fps) + 1)
+      );
+      $("frameNumber").value = String(displayedFrame);
+      state.requestedFrame = null;
+      $("exhaustive").checked = Boolean(
+        state.frames.get(displayedFrame)?.exhaustive
+      );
+      renderList();
+    }
+    render();
+  });
+  video.addEventListener("timeupdate", () => {
+    if (state.fps > 0 && !state.drawing && !video.seeking && state.requestedFrame === null) {
+      const frame = Math.min(state.frameCount, Math.max(1, Math.round(video.currentTime * state.fps) + 1));
+      if (Number($("frameNumber").value) !== frame) {
+        $("frameNumber").value = String(frame); render(); renderList();
+      }
+    }
+  });
+  $("prevFrame").onclick = () => setVideoFrame(frameKey()-1);
+  $("nextFrame").onclick = () => setVideoFrame(frameKey()+1);
+  $("strideForward").onclick = () => setVideoFrame(frameKey()+Math.max(1,Number($("stride").value)||1));
+  $("prevCase").onclick = () => {
+    if (!state.fragments.length) return;
+    state.caseIndex = (state.caseIndex - 1 + state.fragments.length) % state.fragments.length;
+    setVideoFrame(state.fragments[state.caseIndex].start_frame);
+  };
+  $("nextCase").onclick = () => {
+    if (!state.fragments.length) return;
+    state.caseIndex = (state.caseIndex + 1) % state.fragments.length;
+    setVideoFrame(state.fragments[state.caseIndex].start_frame);
+  };
+  $("jumpEvent").onclick = () => {
+    const item = state.fragments[state.caseIndex]; if (item) setVideoFrame(item.event_frame);
+  };
+  $("exhaustive").onchange = () => {
+    if (refuseFrozenEdit()) {
+      $("exhaustive").checked = Boolean(state.frames.get(frameKey())?.exhaustive);
+      return;
+    }
+    const record = recordFor(frameKey());
+    record.exhaustive = $("exhaustive").checked;
+    if (record.review_status === "reviewed" && !record.exhaustive) {
+      record.review_status = "pending";
+      $("reviewStatus").value = "pending";
+    }
+    renderList();
+    persistAnnotations();
+  };
+  $("saveFrame").onclick = () => {
+    if (refuseFrozenEdit()) return;
+    if (!state.reviewReady) {
+      setMessage("Verifica primero los metadatos y la correspondencia del video.", true);
+      return;
+    }
+    const record = recordFor(frameKey());
+    record.exhaustive = $("exhaustive").checked;
+    record.review_status = $("reviewStatus").value;
+    record.review_note = $("reviewNote").value.trim();
+    if (record.review_status === "reviewed" && !record.exhaustive) {
+      setMessage("Un fotograma revisado debe marcarse como exhaustivo.", true);
+      return;
+    }
+    if (record.review_status === "not_applicable" && !record.review_note) {
+      setMessage("Indica una justificación para marcar el fotograma como no aplicable.", true);
+      return;
+    }
+    if (record.review_status === "not_applicable") {
+      record.observations = [];
+    }
+    persistAnnotations();
+    setMessage(`Se guardó la revisión del fotograma ${frameKey()} (${ $("exhaustive").checked ? "exhaustiva" : "no exhaustiva"}).`);
+  };
+  const canvasPoint = (event) => {
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: Math.max(0,Math.min(state.width,(event.clientX-rect.left)*state.width/rect.width)),
+      y: Math.max(0,Math.min(state.height,(event.clientY-rect.top)*state.height/rect.height))
+    };
+  };
+  canvas.onpointerdown = (event) => {
+    if (refuseFrozenEdit()) return;
+    if (!state.reviewReady) {
+      setMessage("Verifica primero el video para anotar sus fotogramas.", true);
+      return;
+    }
+    const point = canvasPoint(event), frame = frameKey();
+    if ($("drawMode").checked) {
+      state.drawing = {x1:point.x,y1:point.y,x2:point.x,y2:point.y}; render(); return;
+    }
+    const predictions = state.detections.get(frame) || [];
+    state.selectedDetection = [...predictions].reverse().find((d) =>
+      point.x>=d.x1 && point.x<=d.x2 && point.y>=d.y1 && point.y<=d.y2) || null;
+    state.selectedAnnotation = null;
+    if (state.selectedDetection) {
+      $("selectedInfo").textContent = `Sugerencia del tracker: ID temporal ${state.selectedDetection.temporal}${state.selectedDetection.persistent ? ` / ID persistente ${state.selectedDetection.persistent}` : ""}. Asigna abajo la identidad humana real.`;
+      $("identity").value = ""; $("unknown").checked = false; $("ambiguous").checked = false;
+      $("ignore").checked = false;
+      $("notes").value = "";
+    }
+    render();
+  };
+  canvas.onpointermove = (event) => {
+    if (!state.drawing) return;
+    const point = canvasPoint(event); state.drawing.x2=point.x; state.drawing.y2=point.y; render();
+  };
+  canvas.onpointerup = () => {
+    if (refuseFrozenEdit()) return;
+    if (!state.drawing) return;
+    const box = state.drawing; state.drawing=null;
+    if (Math.abs(box.x2-box.x1)<4 || Math.abs(box.y2-box.y1)<4) { render(); return; }
+    state.selectedDetection = {
+      x1:Math.min(box.x1,box.x2), y1:Math.min(box.y1,box.y2),
+      x2:Math.max(box.x1,box.x2), y2:Math.max(box.y1,box.y2),
+      temporal:"", persistent:"", label:"object", classId:"", confidence:"", manual:true
+    };
+    state.selectedAnnotation=null;
+    $("selectedInfo").textContent="Recuadro manual. Selecciona el tipo de objeto y asigna una identidad o márcalo como desconocido, ambiguo o ignorado.";
+    $("identity").value=""; $("unknown").checked=false; $("ambiguous").checked=false;
+    $("ignore").checked=false;
+    render();
+  };
+  $("saveObservation").onclick = () => {
+    if (refuseFrozenEdit()) return;
+    if (!state.videoSha256 || !state.reviewReady) {
+      setMessage("Verifica primero el video y sus metadatos antes de guardar anotaciones.", true);
+      return;
+    }
+    const selected = state.selectedDetection;
+    if (!selected && !state.selectedAnnotation) { setMessage("Selecciona o dibuja un recuadro primero.",true); return; }
+    const unknown=$("unknown").checked, ambiguous=$("ambiguous").checked;
+    const ignore=$("ignore").checked, identity=$("identity").value.trim();
+    if ([unknown,ambiguous,ignore].filter(Boolean).length>1) {
+      setMessage("Selecciona solo una opción: desconocida, ambigua o ignorada.",true); return;
+    }
+    if (!unknown && !ambiguous && !ignore && !identity) {
+      setMessage("Escribe un identificador humano real o marca desconocida, ambigua o ignorada.",true); return;
+    }
+    if ((unknown || ambiguous || ignore) && identity) {
+      setMessage("Las observaciones desconocidas, ambiguas o ignoradas no pueden tener identificador.",true);
+      return;
+    }
+    const frame=frameKey(), record=recordFor(frame);
+    const source=selected || state.selectedAnnotation;
+    const observation={
+      annotation_id:state.selectedAnnotation?.annotation_id || `ann-${frame}-${crypto.randomUUID()}`,
+      x1:Number(source.x1),y1:Number(source.y1),x2:Number(source.x2),y2:Number(source.y2),
+      entity_type:$("entityType").value,
+      identity_id:(unknown||ambiguous||ignore)?null:(identity || null),
+      identity_status: unknown ? "unknown" : ambiguous ? "pending" :
+        ignore ? "ignored" : "confirmed",
+      unknown,ambiguous,ignore,notes:$("notes").value,
+      source_kind:selected?.manual?"manual":"prediction",
+      source_temporal_track_id:selected?.temporal ? Number(selected.temporal) : null,
+      source_persistent_id:selected?.persistent ? Number(selected.persistent) : null
+    };
+    if (state.selectedAnnotation) {
+      const index=record.observations.findIndex((item)=>item.annotation_id===state.selectedAnnotation.annotation_id);
+      if (index>=0) record.observations[index]=observation;
+    } else record.observations.push(observation);
+    state.actionHistory.push({
+      action: state.selectedAnnotation ? "corrected" : "created",
+      timestamp: new Date().toISOString(),
+      frame,
+      annotation_id: observation.annotation_id,
+      identity_id: observation.identity_id
+    });
+    state.selectedAnnotation=observation;state.selectedDetection=null;
+    $("identity").value=identity;renderList();render();
+    const label=unknown?"desconocida":ambiguous?"ambigua":ignore?"ignorada":identity;
+    setMessage(`Se guardó «${label}» en el fotograma ${frame}.`);
+    persistAnnotations();
+  };
+  $("deleteObservation").onclick = () => {
+    if (refuseFrozenEdit()) return;
+    if (!state.selectedAnnotation) { setMessage("Selecciona primero una anotación guardada en la lista del fotograma.",true); return; }
+    const record=recordFor(frameKey());
+    const deleted=state.selectedAnnotation;
+    state.actionHistory.push({
+      action:"deleted",
+      timestamp:new Date().toISOString(),
+      frame:frameKey(),
+      annotation_id:deleted.annotation_id,
+      identity_id:deleted.identity_id || null
+    });
+    record.observations=record.observations.filter((item)=>item.annotation_id!==state.selectedAnnotation.annotation_id);
+    state.selectedAnnotation=null;renderList();render();setMessage("Anotación eliminada.");
+    persistAnnotations();
+  };
+  $("saveTrajectoryEvent").onclick = () => {
+    if (refuseFrozenEdit()) return;
+    if (!state.videoSha256 || !state.reviewReady) {
+      setMessage("Verifica primero el video y sus metadatos antes de registrar eventos.", true);
+      return;
+    }
+    const identityId = $("eventIdentity").value.trim();
+    if (!identityId) {
+      setMessage("Indica el ID humano de la persona del evento.", true);
+      return;
+    }
+    const frame = frameKey();
+    const record = recordFor(frame);
+    if (!Array.isArray(record.events)) record.events = [];
+    record.events.push({
+      event_id: `event-${frame}-${crypto.randomUUID()}`,
+      identity_id: identityId,
+      event_type: $("trajectoryEventType").value,
+      notes: $("eventNotes").value.trim()
+    });
+    $("eventNotes").value = "";
+    renderList();
+    persistAnnotations();
+    setMessage(`Se registró manualmente el evento de ${identityId} en el fotograma ${frame}.`);
+  };
+  const buildGroundTruthPayload = () => {
+    if (!state.file || !state.videoSha256 || !state.width || !state.frameCount ||
+        !state.reviewReady) {
+      throw new Error("Carga el video original y verifica sus metadatos antes de exportar.");
+    }
+    const frames = [...state.frames.values()]
+      .sort((a,b)=>a.frame-b.frame)
+      .map((record) => {
+        const output = {...record};
+        if (!state.frozen || Object.prototype.hasOwnProperty.call(record, "events")) {
+          output.events = record.events || [];
+        }
+        output.observations = record.observations.map((observation) => {
+          if (state.frozen &&
+              !Object.prototype.hasOwnProperty.call(observation, "entity_type")) {
+            return {...observation};
+          }
+          return {...observation, entity_type: observation.entity_type || "player"};
+        });
+        return output;
+      });
+    const payload = {
+      schema_version: 1,
+      record_type: state.recordType || "human_identity_ground_truth",
+      video: {
+        path: state.sourcePath,
+        sha256: state.videoSha256,
+        frame_count: state.frameCount,
+        width: state.width,
+        height: state.height,
+        fps: state.fps
+      },
+      created_at: new Date().toISOString(),
+      annotation_policy: state.annotationPolicy ??
+        "Anotación humana independiente. Solo los fotogramas exhaustivos " +
+        "sin objetos desconocidos, ambiguos o ignorados son aptos para evaluación. " +
+        "Las predicciones son referencias visuales y no son Ground Truth.",
+      sampling_plan: state.samplingPlan || undefined,
+      annotation_history: state.actionHistory,
+      exhaustive_frames: frames
+        .filter((record)=>record.exhaustive)
+        .map((record)=>record.frame),
+      frames
+    };
+    if (state.freezeMetadata) {
+      payload.dataset = {freeze: state.freezeMetadata};
+    }
+    validateAnnotationExport(payload);
+    return payload;
+  };
+  const downloadGroundTruth = (payload) => {
+    const blob=new Blob([JSON.stringify(payload,null,2)+"\n"],{type:"application/json"});
+    const link=document.createElement("a");link.href=URL.createObjectURL(blob);
+    link.download="identity-ground-truth.json";link.click();
+    setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+  };
+  $("exportJson").onclick = async () => {
+    try {
+      if (!await persistAnnotations()) return;
+      const payload = buildGroundTruthPayload();
+      await verifyFrozenGroundTruth(payload);
+      downloadGroundTruth(payload);
+      setMessage(
+        `Se exportaron ${payload.frames.length} fotogramas; ` +
+        `${payload.exhaustive_frames.length} están marcados como exhaustivos` +
+        `${state.frozen ? " y el conjunto quedó verificado como congelado." : "."}`
+      );
+    } catch (error) {
+      setMessage(`No se exportó el Ground Truth: ${error.message}`, true);
+    }
+  };
+  $("freezeGroundTruth").onclick = async () => {
+    if (refuseFrozenEdit()) return;
+    try {
+      const payload = buildGroundTruthPayload();
+      if (state.samplingPlan) {
+        const planFrames = new Set(
+          state.samplingPlan.planned_frames.map((item) => item.frame)
+        );
+        const incomplete = [];
+        for (const frame of planFrames) {
+          const record = payload.frames.find((item) => item.frame === frame);
+          if (!record) {
+            incomplete.push(`Falta el fotograma planificado ${frame}.`);
+            continue;
+          }
+          const status = record.review_status || "pending";
+          if (status === "pending") {
+            incomplete.push(`El fotograma planificado ${frame} está pendiente.`);
+          }
+          if (status === "not_applicable" && !record.review_note?.trim()) {
+            incomplete.push(`El fotograma ${frame} no aplicable requiere justificación.`);
+          }
+          if (status === "reviewed" && (!record.exhaustive ||
+              record.observations.some((observation) =>
+                observation.unknown || observation.ambiguous || observation.ignore))) {
+            incomplete.push(`El fotograma revisado ${frame} debe ser exhaustivo y tener identidades resueltas.`);
+          }
+        }
+        for (const frame of payload.exhaustive_frames) {
+          if (!planFrames.has(frame)) {
+            incomplete.push(`El fotograma exhaustivo ${frame} no pertenece al plan.`);
+          }
+        }
+        if (incomplete.length) {
+          throw new Error(`El plan de muestreo está incompleto:\n- ${incomplete.join("\n- ")}`);
+        }
+      }
+      const eligibleFrames = payload.frames.filter((record) =>
+        record.exhaustive &&
+        record.observations.length > 0 &&
+        record.observations.every((observation) =>
+          !observation.unknown && !observation.ambiguous && !observation.ignore
+        )
+      );
+      if (!eligibleFrames.length) {
+        throw new Error(
+          "Marca al menos un fotograma exhaustivo con identidades resueltas antes de congelar el conjunto."
+        );
+      }
+      if (!confirm(
+        "Congelar este Ground Truth como conjunto de prueba? " +
+        "La anotación quedará en modo de solo lectura y no debe modificarse " +
+        "después de consultar resultados de modelos."
+      )) return;
+      const freeze = {
+        status: "frozen",
+        frozen_at: new Date().toISOString(),
+        content_sha256: await groundTruthContentSha256(payload),
+        policy:
+          "Anotar y revisar sin consultar métricas de los modelos; conservar " +
+          "este conjunto sin modificaciones para la prueba final."
+      };
+      payload.dataset = {freeze};
+      validateAnnotationExport(payload);
+      await verifyFrozenGroundTruth(payload);
+      state.frames = new Map(payload.frames.map((record) => [
+        record.frame, record
+      ]));
+      state.recordType = payload.record_type;
+      state.annotationPolicy = payload.annotation_policy;
+      state.freezeMetadata = freeze;
+      state.frozen = true;
+      setAnnotationFrozen(true);
+      if (!await persistAnnotations()) {
+        state.freezeMetadata = null;
+        state.frozen = false;
+        setAnnotationFrozen(false);
+        return;
+      }
+      downloadGroundTruth(payload);
+      setMessage(
+        `Ground Truth congelado. SHA-256 del contenido: ${freeze.content_sha256}. ` +
+        "Se exportó el conjunto de prueba de solo lectura."
+      );
+    } catch (error) {
+      setMessage(`No se pudo congelar el Ground Truth: ${error.message}`, true);
+    }
+  };
+  $("clearLocalAnnotations").onclick = async () => {
+    if (!state.videoSha256 || !confirm("¿Borrar las anotaciones y decisiones de revisión guardadas localmente para el video cargado?")) {
+      return;
+    }
+    const database = await databaseReady;
+    await new Promise((resolve, reject) => {
+      const transaction = database.transaction("sessions", "readwrite");
+      transaction.objectStore("sessions").delete(state.videoSha256);
+      transaction.oncomplete = resolve;
+      transaction.onerror = () => reject(transaction.error || new Error("No se pudo borrar la copia local."));
+    });
+    state.frames.clear();
+    state.reviewDecisions.clear();
+    state.reviewDecisionHistory = [];
+    state.frozen = false;
+    state.freezeMetadata = null;
+    state.recordType = null;
+    state.annotationPolicy = null;
+    setAnnotationFrozen(false);
+    syncFrame();
+    setMessage("Se borraron las anotaciones y decisiones locales de este video.");
+  };
+  window.addEventListener("keydown",(event)=>{
+    if(event.target instanceof HTMLInputElement) return;
+    if(event.key==="ArrowLeft") setVideoFrame(frameKey()-1);
+    if(event.key==="ArrowRight") setVideoFrame(frameKey()+1);
+    if(event.key==="ArrowUp") $("prevCase").click();
+    if(event.key==="ArrowDown") $("nextCase").click();
+  });
+})();
+</script>
+</body>
+</html>

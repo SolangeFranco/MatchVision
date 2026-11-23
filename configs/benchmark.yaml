@@ -1,0 +1,76 @@
+# Experiment plan only. No weights or dataset files are downloaded by this
+# configuration, and it does not represent measured results.
+experiment:
+  name: football-mot-baseline
+  status: planned
+  random_seed: 42
+  dataset:
+    name: SoccerNet-Tracking
+    release: pin-after-authorized-download
+    split: validation
+    sequence_manifest: data/annotations/soccernet_tracking_manifest.json
+    sequence_hashes_required: true
+    split_by: match
+    frame_policy: full_sequence
+    smoke_test_frames: 300
+
+runtime:
+  source_resolution: preserve
+  preprocessing: letterbox
+  device: record-resolved-device
+  batch_size: 1
+  warmup_runs: 10
+  timed_repeats: 3
+
+detectors:
+  - family: yolo
+    checkpoint: pin-before-run
+    pretrained_on: COCO
+  - family: rt-detr
+    checkpoint: pin-before-run
+    pretrained_on: COCO
+  - family: faster-rcnn
+    checkpoint: pin-before-run
+    pretrained_on: COCO
+
+trackers:
+  - family: bytetrack
+    input: cached_detector_outputs
+  - family: botsort
+    reid: disabled
+    input: cached_detector_outputs
+  - family: botsort
+    reid: enabled
+    reid_checkpoint: pin-before-run
+    input: cached_detector_outputs
+  - family: mixsort
+    enabled_only_after_license_and_dependency_review: true
+    input: cached_detector_outputs
+
+evaluation:
+  tracking_metrics:
+    - HOTA
+    - DetA
+    - AssA
+    - MOTA
+    - IDF1
+    - ID_switches
+    - fragmentation
+  detection_metrics:
+    - precision
+    - recall
+    - AP
+  performance_metrics:
+    - detector_latency
+    - end_to_end_fps
+    - peak_memory
+  caveat: >
+    SoccerNet-Tracking MOT labels are class-agnostic; do not report
+    class-specific ball AP unless the pinned annotation release supplies
+    verified class labels.
+
+outputs:
+  directory: outputs/benchmarks
+  save_detections: true
+  save_predictions: true
+  save_environment_and_hashes: true

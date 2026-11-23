@@ -1,0 +1,18 @@
+reid_class_ids:
+  - 0
+reid_method: hsv_hog
+embedding_weights_path: models/osnet_ain_x1_0_msmt17_256x128_amsgrad_ep50_lr0.0015_coslr_b64_fb10_softmax_labsmth_flip_jitter.pth
+embedding_device: auto
+embedding_batch_size: 16
+embedding_gallery_size: 5
+embedding_sample_interval: 10
+embedding_weight: 0.60
+minimum_visual_similarity: 0.58
+maximum_reidentification_gap: 150
+active_identity_protection: 8
+minimum_association_confidence: 0.82
+ambiguity_margin: 0.06
+maximum_normalized_motion: 5.0
+history_length: 30
+scene_cut_mean_difference: 28.0
+scene_cut_histogram_distance: 0.60

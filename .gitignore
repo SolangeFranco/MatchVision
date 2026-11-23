@@ -1,0 +1,57 @@
+
+# Entornos virtuales y Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Datos y resultados
+/data/
+/outputs/
+
+# Modelos y pesos descargados
+/models/*
+!/models/README.md
+*.pt
+*.pth
+*.onnx
+*.engine
+*.safetensors
+*.ckpt
+*.weights
+
+# Cachés y ejecuciones
+.cache/
+.ultralytics/
+runs/
+wandb/
+mlruns/
+
+# Configuración privada y credenciales
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+credentials/
+
+# Archivos locales del editor
+.vscode/
+.idea/
+
+# Archivos temporales del sistema
+.DS_Store
+Thumbs.db
+*.log
+
+# Respaldo del historial Git anterior
+.git-respaldo-antes-de-republicar/
+
+# Metadatos generados de Python
+*.egg-info/

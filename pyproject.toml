@@ -1,0 +1,68 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "matchvision"
+version = "0.1.0"
+description = "Análisis de video de fútbol a partir de una cámara"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "opencv-python>=4.8,<5",
+    "numpy>=1.24,<3",
+    "PyYAML>=6.0",
+    "jsonschema>=4.20",
+    "scipy>=1.10",
+    "trackeval @ git+https://github.com/JonathonLuiten/TrackEval.git@12c8791b303e0a0b50f753af204249e622d0281a",
+]
+
+[project.optional-dependencies]
+vision = [
+    "ultralytics>=8.3,<9",
+    "lap>=0.5.12",
+]
+annotation = [
+    "av>=12,<20",
+]
+reid = [
+    "torch>=2.0",
+    "torchvision>=0.15",
+    "torchreid==0.2.5",
+    "gdown>=5.0",
+    "yacs>=0.1.8",
+    "tensorboard>=2.10",
+]
+dev = [
+    "pytest>=8.0",
+]
+
+[project.scripts]
+matchvision-inspect-video = "matchvision.cli:main"
+matchvision-evaluate = "matchvision.evaluation.cli:main"
+matchvision-validate-config = "matchvision.experiments.cli:main"
+matchvision-track-video = "matchvision.pipeline.cli:main"
+matchvision-analyze-tracking = "matchvision.tracking.analysis_cli:main"
+matchvision-select-review-cases = "matchvision.tracking.review_cli:main"
+matchvision-prepare-reid-review = "matchvision.reidentification.review_assistant:main"
+matchvision-evaluate-identities = "matchvision.evaluation.identity_cli:main"
+matchvision-benchmark = "matchvision.evaluation.benchmark:main"
+matchvision-evaluate-reid-retrieval = "matchvision.evaluation.reid_retrieval:main"
+matchvision-create-annotation-plan = "matchvision.evaluation.annotation_protocol:create_plan_main"
+matchvision-quality-control-ground-truth = "matchvision.evaluation.annotation_protocol:quality_main"
+matchvision-freeze-identity-set = "matchvision.evaluation.identity_annotations:freeze_main"
+matchvision-evaluate-reid-proposals = "matchvision.evaluation.reid_metrics_cli:main"
+matchvision-create-reid-splits = "matchvision.evaluation.reid_splits:main"
+matchvision-create-review-video = "matchvision.annotations.review_video_cli:main"
+matchvision-classify-teams = "matchvision.teams.cli:main"
+matchvision-track-ball = "matchvision.ball.cli:main"
+matchvision-download-reid-model = "matchvision.reidentification.download_model:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+matchvision = ["schemas/*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
